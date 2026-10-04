@@ -10,13 +10,22 @@ struct AgentsListView: View {
     var onOpen: (String) -> Void
     var onTalk: (String) -> Void
 
-    private var groups: [(title: String, subtitle: String?, sessions: [AgentSession])] {
+    private struct AgentGroup {
+        var title: String
+        var subtitle: String?
+        var color: Color?
+        var sessions: [AgentSession]
+    }
+
+    private var byAccount: Bool { store.workspaces.count > 1 }
+
+    private var groups: [AgentGroup] {
         // Stable order (oldest first) so rows never move under the pointer.
         let all = store.visibleSessions.sorted { ($0.startedAt, $0.id) < ($1.startedAt, $1.id) }
-        if store.workspaces.count > 1 {
+        if byAccount {
             return store.workspaces.compactMap { ws in
                 let list = all.filter { $0.workspaceId == ws.id }
-                return list.isEmpty ? nil : (ws.name, ws.email, list)
+                return list.isEmpty ? nil : AgentGroup(title: ws.name, subtitle: ws.email, color: ws.color, sessions: list)
             }
         }
         var order: [String] = []
@@ -25,33 +34,29 @@ struct AgentsListView: View {
             if byFolder[s.folderName] == nil { order.append(s.folderName) }
             byFolder[s.folderName, default: []].append(s)
         }
-        return order.map { ($0, nil, byFolder[$0] ?? []) }
+        return order.map { AgentGroup(title: $0, subtitle: nil, color: nil, sessions: byFolder[$0] ?? []) }
+    }
+
+    private func waiting(_ s: AgentSession) -> Int {
+        store.items.filter { $0.sessionId == s.id && $0.isActionable }.count
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            header
+            Rectangle().fill(Color.white.opacity(0.07)).frame(height: 0.5)
             if store.visibleSessions.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("No agents running").font(look.font(12.5, .semibold)).foregroundStyle(.white)
-                    Text("Start Claude Code in any terminal or the Claude app.")
-                        .font(look.font(11)).foregroundStyle(Theme.textDim)
-                }
-                .padding(14)
+                emptyState
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
                         ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(g.title).font(look.font(11, .semibold)).foregroundStyle(Theme.textDim)
-                                    if let sub = g.subtitle {
-                                        Text(sub).font(look.font(10)).foregroundStyle(Theme.textFaint).lineLimit(1)
-                                    }
-                                }
-                                .padding(.horizontal, 8).padding(.bottom, 2)
+                            VStack(alignment: .leading, spacing: 4) {
+                                groupHeader(g)
                                 ForEach(g.sessions) { s in
                                     AgentRow(session: s,
-                                             waiting: store.items.filter { $0.sessionId == s.id && $0.isActionable }.count,
+                                             waiting: waiting(s),
+                                             showFolder: byAccount,
                                              onOpen: { onOpen(s.id) },
                                              onTalk: { onTalk(s.id) },
                                              onHide: { store.forgetSession(s.id) })
@@ -59,57 +64,226 @@ struct AgentsListView: View {
                             }
                         }
                     }
-                    .padding(8)
+                    .padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 8)
                 }
-                .frame(maxHeight: 480)
+                .frame(maxHeight: 520)
             }
         }
-        .frame(width: 300 * look.textScale)
+        .frame(width: 330 * look.textScale)
         .fixedSize(horizontal: false, vertical: true)
         .background(Glass())
-        .shadow(color: .black.opacity(0.45), radius: 20, y: 8)
+        .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
         .padding(16)
         .preferredColorScheme(.dark)
+    }
+
+    private var header: some View {
+        let sessions = store.visibleSessions
+        let working = sessions.filter { $0.status == .working }.count
+        let needsYou = sessions.filter { $0.status == .waiting || $0.status == .idle || waiting($0) > 0 }.count
+        return HStack(spacing: 8) {
+            Text("Agents").font(look.font(14, .semibold)).foregroundStyle(.white)
+            if !sessions.isEmpty {
+                Text("\(sessions.count)")
+                    .font(look.font(11, .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.textDim)
+            }
+            Spacer(minLength: 8)
+            if needsYou > 0 { Tally(count: needsYou, label: "need you", color: Theme.amber) }
+            if working > 0 { Tally(count: working, label: "working", color: Theme.blue) }
+        }
+        .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 11)
+    }
+
+    private func groupHeader(_ g: AgentGroup) -> some View {
+        HStack(spacing: 6) {
+            if let color = g.color {
+                Circle().fill(color).frame(width: 6, height: 6)
+            } else {
+                Image(systemName: "folder.fill").font(look.font(8.5)).foregroundStyle(Theme.textFaint)
+            }
+            Text(g.title.uppercased())
+                .font(look.font(10, .semibold)).tracking(0.7)
+                .foregroundStyle(Theme.textDim).lineLimit(1)
+            if let sub = g.subtitle {
+                Text(sub).font(look.font(10)).foregroundStyle(Theme.textFaint).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            Text("\(g.sessions.count)").font(look.font(10, .medium).monospacedDigit()).foregroundStyle(Theme.textFaint)
+        }
+        .padding(.horizontal, 8).padding(.bottom, 2)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle().fill(Theme.claude.opacity(0.12)).frame(width: 40, height: 40)
+                Image(systemName: "staroflife.fill").font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.claude)
+            }
+            Text("No agents running").font(look.font(12.5, .semibold)).foregroundStyle(.white)
+            Text("Start Claude Code in any terminal or the Claude app.")
+                .font(look.font(11)).foregroundStyle(Theme.textDim).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20).padding(.vertical, 26)
+    }
+}
+
+/// "3 working" with a colored dot, used in the agents list header.
+private struct Tally: View {
+    var count: Int
+    var label: String
+    var color: Color
+    @ObservedObject private var look = Appearance.shared
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 5, height: 5)
+            Text("\(count) \(label)").font(look.font(10, .medium).monospacedDigit())
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(Capsule().fill(color.opacity(0.12)))
     }
 }
 
 private struct AgentRow: View {
     let session: AgentSession
     let waiting: Int
+    /// Show the project folder (rows are grouped by account rather than by folder).
+    let showFolder: Bool
     var onOpen: () -> Void
     var onTalk: () -> Void
     var onHide: () -> Void
     @ViewState private var hover = false
     @ObservedObject private var look = Appearance.shared
 
-    var body: some View {
-        HStack(spacing: 8) {
-            StatusGlyph(status: session.status, size: 8)
-                .frame(width: 10)
-            AgentMark(status: session.status, size: 13)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(session.displayName).font(look.font(12.5, .medium)).foregroundStyle(.white).lineLimit(1)
-                if hover {
-                    Text("\(session.shortPath) · \(session.status.label) · \(session.terminal.kindLabel)")
-                        .font(look.font(10)).foregroundStyle(Theme.textFaint).lineLimit(1)
-                }
-            }
-            if waiting > 0 {
-                HStack(spacing: 2) {
-                    Image(systemName: "tray").font(look.font(8.5))
-                    Text("\(waiting)").font(look.font(10, .semibold))
-                }
-                .foregroundStyle(Theme.amber)
-            }
-            Spacer(minLength: 4)
-            IconButton(systemName: "mic", size: 10.5, action: onTalk).opacity(hover ? 1 : 0.55).help("Talk to this agent")
-            IconButton(systemName: "xmark", size: 9.5, action: onHide).opacity(hover ? 1 : 0.55).help("Hide from the list")
+    private var hasTitle: Bool { session.title?.isEmpty == false }
+    private var needsYou: Bool { waiting > 0 || session.status == .waiting || session.status == .idle }
+
+    private var statusText: String {
+        if waiting > 0 { return waiting == 1 ? "Needs you" : "\(waiting) waiting" }
+        switch session.status {
+        case .working: return "Working"
+        case .waiting: return "Asking"
+        case .idle: return "Your turn"
+        case .done: return "Done"
+        case .ready: return "Ready"
+        case .ended: return "Ended"
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(hover ? 0.08 : 0)))
-        .contentShape(Rectangle())
+    }
+
+    private var statusColor: Color { waiting > 0 ? Theme.amber : session.status.color }
+
+    /// Folder (when it isn't the name already) and where the agent runs.
+    private var meta: String {
+        var parts: [String] = []
+        if hasTitle && showFolder { parts.append(session.folderName) }
+        if !hasTitle { parts.append(session.shortPath) }
+        parts.append(session.terminal.kindLabel)
+        return parts.joined(separator: " · ")
+    }
+
+    private var prompt: String? {
+        guard let p = session.lastPrompt else { return nil }
+        let line = p.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return line.isEmpty ? nil : line
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            AgentOrb(status: session.status, attention: needsYou)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(session.displayName)
+                        .font(look.font(12.5, .semibold)).foregroundStyle(.white).lineLimit(1)
+                        .help(session.displayName)
+                    Spacer(minLength: 4)
+                    TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                        Text(Self.ago(session.updatedAt, now: ctx.date))
+                            .font(look.font(10, .medium).monospacedDigit()).foregroundStyle(Theme.textFaint)
+                    }
+                    .opacity(hover ? 0 : 1)
+                }
+                HStack(spacing: 5) {
+                    Text(statusText).font(look.font(10.5, .semibold)).foregroundStyle(statusColor)
+                    Text("·").font(look.font(10.5)).foregroundStyle(Theme.textFaint)
+                    Text(meta).font(look.font(10.5)).foregroundStyle(Theme.textDim).lineLimit(1).truncationMode(.middle)
+                }
+                if let prompt {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Image(systemName: "arrow.turn.down.right").font(look.font(8.5, .semibold))
+                        Text(prompt).font(look.font(10.5)).lineLimit(1)
+                    }
+                    .foregroundStyle(Theme.textFaint)
+                    .padding(.top, 1)
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(needsYou ? Theme.amber.opacity(hover ? 0.12 : 0.07) : Color.white.opacity(hover ? 0.075 : 0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(needsYou ? Theme.amber.opacity(0.28) : Color.white.opacity(hover ? 0.12 : 0.06), lineWidth: 0.75)
+        )
+        .overlay(alignment: .topTrailing) {
+            if hover {
+                HStack(spacing: 0) {
+                    IconButton(systemName: "mic", size: 10.5, action: onTalk).help("Talk to this agent")
+                    IconButton(systemName: "xmark", size: 9.5, action: onHide).help("Hide from the list")
+                }
+                .padding(4)
+                .transition(.opacity)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture(perform: onOpen)
-        .onHover { h in withAnimation(.easeOut(duration: 0.1)) { hover = h } }
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
+    }
+
+    static func ago(_ date: Date, now: Date) -> String {
+        let s = max(0, Int(now.timeIntervalSince(date)))
+        if s < 60 { return "now" }
+        if s < 3600 { return "\(s / 60)m" }
+        if s < 86400 { return "\(s / 3600)h" }
+        return "\(s / 86400)d"
+    }
+}
+
+/// The agent's avatar in the list: the Claude spark in a soft disc, ringed by its status
+/// (a spinning arc while it works).
+private struct AgentOrb: View {
+    var status: AgentStatus
+    var attention: Bool
+    var size: CGFloat = 30
+    @ViewState private var spin = false
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Theme.claude.opacity(0.13))
+            Image(systemName: "staroflife.fill")
+                .font(.system(size: size * 0.4, weight: .bold))
+                .foregroundStyle(Theme.claude)
+            if status == .working {
+                Circle().strokeBorder(Theme.blue.opacity(0.18), lineWidth: 1.5)
+                Circle()
+                    .trim(from: 0, to: 0.3)
+                    .stroke(Theme.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(spin ? 360 : 0))
+                    .onAppear {
+                        withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { spin = true }
+                    }
+            } else {
+                Circle().strokeBorder((attention ? Theme.amber : status.color).opacity(0.55), lineWidth: 1.5)
+            }
+        }
+        .frame(width: size, height: size)
+        .shadow(color: attention ? Theme.amber.opacity(0.45) : .clear, radius: 6)
+        .id(status == .working)   // fresh view (and animation) every time work starts again
     }
 }
 

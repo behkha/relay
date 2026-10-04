@@ -204,6 +204,7 @@ enum Theme {
     static let blue = Color(hex: "#4C8DFF")
     static let amber = Color(hex: "#E8B04A")
     static let green = Color(hex: "#3DBE7A")
+    static let claude = Color(hex: "#D97757")
     static let card = Color(hex: "#1B1B1D")
     static let cardBorder = Color.white.opacity(0.08)
     static let row = Color.white.opacity(0.05)

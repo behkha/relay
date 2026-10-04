@@ -21,6 +21,7 @@ struct TranscriptEntry: Identifiable, Hashable {
 final class TranscriptReader: ObservableObject {
     @Published private(set) var entries: [TranscriptEntry] = []
     @Published private(set) var title: String?
+    private var titleRank = 0
     @Published private(set) var truncated = false
     @Published private(set) var missing = false
 
@@ -138,7 +139,7 @@ final class TranscriptReader: ObservableObject {
             if size < self.offset {   // file was rewritten: start over
                 self.offset = 0
                 self.partial = Data()
-                DispatchQueue.main.async { self.entries = []; self.toolIndex = [:]; self.title = nil }
+                DispatchQueue.main.async { self.entries = []; self.toolIndex = [:]; self.title = nil; self.titleRank = 0 }
             }
             var cut = false
             if self.offset == 0 && size > Self.initialWindow {
@@ -170,9 +171,10 @@ final class TranscriptReader: ObservableObject {
 
     private func ingest(_ records: [[String: Any]]) {
         guard !records.isEmpty else { return }
-        var state = BuildState(entries: entries, toolIndex: toolIndex)
+        var state = BuildState(entries: entries, toolIndex: toolIndex, title: title, titleRank: titleRank)
         Self.apply(records, to: &state)
-        if let t = state.title { title = t }
+        title = state.title
+        titleRank = state.titleRank
         var list = state.entries
         toolIndex = state.toolIndex
         if list.count > Self.maxEntries {
@@ -188,6 +190,16 @@ final class TranscriptReader: ObservableObject {
         var entries: [TranscriptEntry]
         var toolIndex: [String: Int]
         var title: String?
+        /// Which source `title` came from, so a weaker one never replaces a stronger one:
+        /// 1 = Claude Code's AI title, 2 = the agent's name, 3 = a name the user gave the session.
+        var titleRank = 0
+
+        mutating func setTitle(_ t: Any?, rank: Int) {
+            guard let t = (t as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty,
+                  rank >= titleRank else { return }
+            title = t
+            titleRank = rank
+        }
     }
 
     static func build(_ records: [[String: Any]]) -> [TranscriptEntry] {
@@ -199,7 +211,12 @@ final class TranscriptReader: ObservableObject {
     private static func apply(_ records: [[String: Any]], to state: inout BuildState) {
         for rec in records {
             let type = rec["type"] as? String ?? ""
-            if type == "ai-title", let t = rec["aiTitle"] as? String { state.title = t; continue }
+            switch type {
+            case "custom-title": state.setTitle(rec["customTitle"], rank: 3); continue
+            case "agent-name": state.setTitle(rec["agentName"], rank: 2); continue
+            case "ai-title": state.setTitle(rec["aiTitle"], rank: 1); continue
+            default: break
+            }
             guard type == "user" || type == "assistant" else { continue }
             if rec["isSidechain"] as? Bool == true { continue }
             let uuid = rec["uuid"] as? String ?? UUID().uuidString
