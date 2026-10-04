@@ -1,0 +1,11 @@
+{
+  "/Users/behkha/Programming/relay/Sources/Relay/App.swift" : {
+    "abi-baseline-json" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Release/Relay-p.build/Objects-normal/arm64/Relay.abi.json",
+    "const-values" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Release/Relay-p.build/Objects-normal/arm64/Relay-primary.swiftconstvalues",
+    "dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Release/Relay-p.build/Objects-normal/arm64/Relay-primary.d",
+    "diagnostics" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Release/Relay-p.build/Objects-normal/arm64/Relay-primary.dia",
+    "swiftdoc" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Release/Relay-p.build/Objects-normal/arm64/Relay.swiftdoc",
+    "swiftmodule" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Release/Relay-p.build/Objects-normal/arm64/Relay.swiftmodule",
+    "swiftsourceinfo" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Release/Relay-p.build/Objects-normal/arm64/Relay.swiftsourceinfo"
+  }
+}

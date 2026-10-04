@@ -1,0 +1,23 @@
+{
+  "/Users/behkha/Programming/relay/Sources/Relay/App.swift" : {
+    "const-values" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/App.swiftconstvalues",
+    "dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/App.d",
+    "diagnostics" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/App.dia",
+    "object" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/App.o",
+    "swift-dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/App.swiftdeps"
+  },
+  "/Users/behkha/Programming/relay/Sources/Relay/Appearance.swift" : {
+    "const-values" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Appearance.swiftconstvalues",
+    "dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Appearance.d",
+    "diagnostics" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Appearance.dia",
+    "object" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Appearance.o",
+    "swift-dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Appearance.swiftdeps"
+  },
+  "/Users/behkha/Programming/relay/Sources/Relay/CardView.swift" : {
+    "const-values" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/CardView.swiftconstvalues",
+    "dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/CardView.d",
+    "diagnostics" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/CardView.dia",
+    "object" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/CardView.o",
+    "swift-dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/CardView.swiftdeps"
+  }
+}

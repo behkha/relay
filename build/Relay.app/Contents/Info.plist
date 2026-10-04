@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Relay</string>
+  <key>CFBundleDisplayName</key><string>Relay</string>
+  <key>CFBundleIdentifier</key><string>com.behkha.relay</string>
+  <key>CFBundleExecutable</key><string>Relay</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>202610041535</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Relay listens only while you hold a voice message for your agents.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Relay turns your voice message into text for your agents.</string>
+  <key>NSAppleEventsUsageDescription</key><string>Relay types your answers into the terminal tab where the agent is running.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Relay serves the inbox to your phone on this network.</string>
+</dict>
+</plist>

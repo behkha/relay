@@ -1,0 +1,23 @@
+{
+  "/Users/behkha/Programming/relay/Sources/Relay/Components.swift" : {
+    "const-values" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Components.swiftconstvalues",
+    "dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Components.d",
+    "diagnostics" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Components.dia",
+    "object" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Components.o",
+    "swift-dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/Components.swiftdeps"
+  },
+  "/Users/behkha/Programming/relay/Sources/Relay/HTTPServer.swift" : {
+    "const-values" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HTTPServer.swiftconstvalues",
+    "dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HTTPServer.d",
+    "diagnostics" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HTTPServer.dia",
+    "object" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HTTPServer.o",
+    "swift-dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HTTPServer.swiftdeps"
+  },
+  "/Users/behkha/Programming/relay/Sources/Relay/HookInstaller.swift" : {
+    "const-values" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HookInstaller.swiftconstvalues",
+    "dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HookInstaller.d",
+    "diagnostics" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HookInstaller.dia",
+    "object" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HookInstaller.o",
+    "swift-dependencies" : "/Users/behkha/Programming/relay/.build/out/Intermediates.noindex/Relay.build/Debug/Relay-p.build/Objects-normal/arm64/HookInstaller.swiftdeps"
+  }
+}
