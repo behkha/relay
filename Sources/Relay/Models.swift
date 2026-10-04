@@ -11,6 +11,10 @@ struct Workspace: Codable, Identifiable, Hashable {
     var colorHex: String
     /// Optional shell command name, e.g. "claude-work", installed into ~/.zshrc.
     var shellCommand: String?
+    /// The Claude desktop app profile (--user-data-dir) signed in to this account, if any.
+    var desktopProfile: String?
+    /// Your own shell alias that opens that profile (shown for reference; Relay doesn't write it).
+    var desktopAlias: String?
     var createdAt: Date = Date()
 
     // Cached account info from `claude auth status --json`.
@@ -19,6 +23,9 @@ struct Workspace: Codable, Identifiable, Hashable {
     var loggedIn: Bool?
 
     var isDefault: Bool { configDir == nil }
+
+    /// "rezaei" for ~/Library/Application Support/Claude/rezaei.
+    var desktopProfileName: String? { desktopProfile.map { ($0 as NSString).lastPathComponent } }
 
     var resolvedConfigDir: String {
         configDir ?? (NSHomeDirectory() as NSString).appendingPathComponent(".claude")

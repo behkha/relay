@@ -268,6 +268,33 @@ struct WorkspaceDetail: View {
                     }
                 }
 
+                section("Claude app") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let profile = current.desktopProfile {
+                            Text("Agents in this Claude desktop profile are filed under this account by their signed-in email.")
+                                .font(.system(size: 12)).foregroundStyle(Theme.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                            row("Profile", (profile as NSString).abbreviatingWithTildeInPath)
+                            if let alias = current.desktopAlias { row("Your alias", alias) }
+                            HStack(spacing: 8) {
+                                Button("Open Claude app") { store.openDesktopApp(current) }
+                                    .buttonStyle(PrimaryButtonStyle())
+                                Button("Unlink") {
+                                    var ws = current
+                                    ws.desktopProfile = nil
+                                    ws.desktopAlias = nil
+                                    store.updateWorkspace(ws)
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                            }
+                        } else {
+                            Text("No Claude desktop profile linked yet. Relay links one automatically the first time an agent from that profile, signed in as \(current.email ?? "this account"), does something.")
+                                .font(.system(size: 12)).foregroundStyle(Theme.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
                 section("Start an agent") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {

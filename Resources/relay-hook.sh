@@ -37,6 +37,8 @@ ARGS=(
   -H "X-Relay-Tmux-Pane: ${TMUX_PANE:-}"
   -H "X-Relay-Iterm-Session: ${ITERM_SESSION_ID:-}"
   -H "X-Relay-Entrypoint: ${CLAUDE_CODE_ENTRYPOINT:-}"
+  -H "X-Relay-Account: ${CLAUDE_CODE_USER_EMAIL:-}"
+  -H "X-Relay-Exec: ${CLAUDE_CODE_EXECPATH:-}"
   "http://127.0.0.1:$PORT/hook/$EVENT"
 )
 
@@ -69,6 +71,7 @@ if [ "$EVENT" = "Wait" ]; then
       -H "X-Relay-Herdr-Pane: ${HERDR_PANE_ID:-}" -H "X-Relay-Herdr-Socket: ${HERDR_SOCKET_PATH:-}" \
       -H "X-Relay-Tmux: ${TMUX:-}" -H "X-Relay-Tmux-Pane: ${TMUX_PANE:-}" \
       -H "X-Relay-Iterm-Session: ${ITERM_SESSION_ID:-}" -H "X-Relay-Entrypoint: ${CLAUDE_CODE_ENTRYPOINT:-}" \
+      -H "X-Relay-Account: ${CLAUDE_CODE_USER_EMAIL:-}" -H "X-Relay-Exec: ${CLAUDE_CODE_EXECPATH:-}" \
       "http://127.0.0.1:$PORT/hook/Wait" 2>/dev/null &
     CURL=$!
     wait $CURL

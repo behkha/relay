@@ -263,7 +263,9 @@ final class Store: ObservableObject {
             exchange.respond(.empty)
             return
         }
-        let wsId = request.header("x-relay-workspace") ?? "default"
+        let hookWorkspace = request.header("x-relay-workspace") ?? "default"
+        let account = request.header("x-relay-account").nonEmpty
+        let execPath = request.header("x-relay-exec").nonEmpty
         let loc = TerminalLocation(
             tty: request.header("x-relay-tty").nonEmpty,
             termProgram: request.header("x-relay-term").nonEmpty,
@@ -280,6 +282,7 @@ final class Store: ObservableObject {
         if !holds { exchange.respond(.empty) }
 
         DispatchQueue.main.async {
+            let wsId = self.resolveWorkspace(hookWorkspace: hookWorkspace, account: account, execPath: execPath)
             guard self.workspace(wsId) != nil else {
                 if holds { exchange.respond(.empty) }
                 return
@@ -287,6 +290,44 @@ final class Store: ObservableObject {
             self.apply(event: event, payload: payload, sessionId: sessionId, wsId: wsId,
                        loc: loc, pid: pid, exchange: exchange)
         }
+    }
+
+    /// Which account an agent belongs to. Claude desktop app profiles share one Claude Code folder
+    /// (so they all run the same hooks); the app tells its agents which account they use, so the
+    /// signed-in email wins. Then the desktop profile the agent runs from, then the hook's folder.
+    private func resolveWorkspace(hookWorkspace: String, account: String?, execPath: String?) -> String {
+        if let account = account?.lowercased(),
+           let ws = workspaces.first(where: { $0.email?.lowercased() == account }) {
+            // Remember which desktop profile this account runs in, for "Open Claude app".
+            if let profile = Self.desktopProfile(fromExec: execPath), ws.desktopProfile == nil,
+               let i = workspaces.firstIndex(where: { $0.id == ws.id }) {
+                workspaces[i].desktopProfile = profile
+                saveWorkspaces()
+            }
+            return ws.id
+        }
+        if let profile = Self.desktopProfile(fromExec: execPath),
+           let ws = workspaces.first(where: { $0.desktopProfile == profile }) {
+            return ws.id
+        }
+        return hookWorkspace
+    }
+
+    /// ".../Application Support/Claude/rezaei/claude-code/2.1.286/…/claude" → ".../Application Support/Claude/rezaei".
+    static func desktopProfile(fromExec path: String?) -> String? {
+        guard let path, let r = path.range(of: "/claude-code/") else { return nil }
+        let profile = String(path[..<r.lowerBound])
+        guard profile.contains("/Application Support/Claude") else { return nil }
+        return profile
+    }
+
+    /// Opens the Claude desktop app with this account's profile (same as your cc-… alias).
+    func openDesktopApp(_ ws: Workspace) {
+        guard let profile = ws.desktopProfile else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-n", "-a", "Claude", "--args", "--user-data-dir=\(profile)"]
+        try? p.run()
     }
 
     private func apply(event: String, payload: [String: Any], sessionId: String, wsId: String,
