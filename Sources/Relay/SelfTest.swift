@@ -27,6 +27,7 @@ enum SelfTest {
         tailnetDoor()
         webPush()
         pushDispatch()
+        remoteStart()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -579,6 +580,57 @@ enum SelfTest {
         check("door: an unpaired device is refused",
               http("GET", port, "/api/state", headers: signedHeaders("GET", "/api/state", key: key, device: deviceId)).status == 401)
 
+        // Starting and stopping agents (the launcher is a stand-in; nothing runs).
+        let pair2 = devices.newPairingCode()
+        let key2 = P256.Signing.PrivateKey()
+        allow = true
+        let second2 = http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"],
+                           body: try! JSONSerialization.data(withJSONObject: ["code": pair2, "deviceName": "iPad",
+                               "publicKey": key2.publicKey.x963Representation.base64URLEncodedString()]))
+        let dev2 = second2.json["deviceId"] as? String ?? ""
+        func signedPost(_ path: String, _ object: [String: Any]) -> Reply {
+            let body = try! JSONSerialization.data(withJSONObject: object)
+            return http("POST", port, path, headers: signedHeaders("POST", path, body: body, key: key2, device: dev2), body: body)
+        }
+        func signedGet(_ target: String) -> Reply {
+            http("GET", port, target, headers: signedHeaders("GET", target, key: key2, device: dev2))
+        }
+        let project = Paths.support.appendingPathComponent("projects/acme api", isDirectory: true)
+        try? FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        store.sessions["live"] = AgentSession(id: "live", workspaceId: "default", cwd: project.path, pid: nil,
+                                              terminal: TerminalLocation(), status: .working, handle: "claude-9")
+        var launched: [(String, String, String, String)] = []
+        api.launch = { ws, folder, prompt, mode in launched.append((ws.id, folder, prompt, mode)); return .success("0123456789abcdef") }
+        let folders = signedGet("/api/folders")
+        let firstWs = (folders.json["workspaces"] as? [[String: Any]])?.first
+        check("control: folders lists where agents run", second2.status == 200 && folders.json["ok"] as? Bool == true
+              && (firstWs?["folders"] as? [[String: Any]])?.first?["path"] as? String == project.path
+              && folders.json["modes"] as? [String] == ["default", "plan", "acceptEdits"])
+        let unknown = signedPost("/api/start", ["workspaceId": "default", "folder": "/tmp", "prompt": "hi", "mode": "plan"])
+        check("control: start refuses a folder Relay doesn't know", unknown.json["ok"] as? Bool == false && launched.isEmpty)
+        for mode in ["bypassPermissions", "dangerously-skip-permissions", "auto", ""] {
+            let r = signedPost("/api/start", ["workspaceId": "default", "folder": project.path, "prompt": "hi", "mode": mode])
+            check("control: start refuses mode \"\(mode)\"", r.json["ok"] as? Bool == false && launched.isEmpty)
+        }
+        let started = signedPost("/api/start", ["workspaceId": "default", "folder": project.path, "prompt": "'; rm -rf ~", "mode": "acceptEdits"])
+        check("control: start launches in a known folder", started.json["launchId"] as? String == "0123456789abcdef"
+              && launched.count == 1 && launched.first?.1 == project.path && launched.first?.2 == "'; rm -rf ~"
+              && launched.first?.3 == "acceptEdits")
+        let withLaunch = signedGet("/api/state")
+        let rows = withLaunch.json["launches"] as? [[String: Any]] ?? []
+        let liveRow = (withLaunch.json["sessions"] as? [[String: Any]])?.first { $0["id"] as? String == "live" }
+        check("control: state shows the Starting… row", rows.first?["id"] as? String == "0123456789abcdef"
+              && rows.first?["folder"] as? String == "acme api" && rows.first?["sessionId"] as? String == "")
+        check("control: state says which agents can be killed or have a terminal", liveRow?["canKill"] as? Bool == false
+              && liveRow?["tmux"] as? Bool == false)
+        store.claimLaunch("0123456789abcdef", sessionId: "live")
+        check("control: the agent's hook claims its row", store.launches.first?.sessionId == "live")
+        check("control: an agent Relay can't stop isn't killed", signedPost("/api/kill", ["sessionId": "live"]).json["ok"] as? Bool == false
+              && store.sessions["live"] != nil)
+        check("control: only tmux agents have a terminal view", signedGet("/api/terminal?id=live").json["ok"] as? Bool == false)
+        check("control: a launch row can be dismissed", signedPost("/api/launch/dismiss", ["id": "0123456789abcdef"]).json["ok"] as? Bool == true
+              && store.launches.isEmpty)
+
         // The LAN door has no device, so device routes don't exist there.
         var lanStatus: Int?
         let exchange = HTTPExchange(queue: DispatchQueue(label: "relay.selftest")) { r in DispatchQueue.main.async { lanStatus = r.status } }
@@ -586,6 +638,68 @@ enum SelfTest {
                                target: "/api/push/test"), exchange, caps: [.read, .answer])
         spin { lanStatus != nil }
         check("api: device routes don't exist without a device", lanStatus == 404 && pushed.count == 1)
+        lanStatus = nil
+        let lanStart = HTTPExchange(queue: DispatchQueue(label: "relay.selftest")) { r in DispatchQueue.main.async { lanStatus = r.status } }
+        let startBody = try! JSONSerialization.data(withJSONObject: ["workspaceId": "default", "folder": project.path, "mode": "plan"])
+        api.handle(HTTPRequest(method: "POST", path: "/api/start", query: [:], headers: [:], body: startBody, remoteHost: nil,
+                               target: "/api/start"), lanStart, caps: [.read, .answer])
+        spin { lanStatus != nil }
+        check("api: the LAN door can't start agents", lanStatus == 404 && launched.count == 1)
+    }
+
+    // MARK: - Remote start
+
+    private static func remoteStart() {
+        let ws = Workspace(id: "w1", name: "Work", configDir: nil, colorHex: "#E8A85A")
+        let known = { (_: String) in ["/Users/ada/code/api"] }
+        func problem(_ folder: String = "/Users/ada/code/api", mode: String = "default", prompt: String = "hi",
+                     workspace: String = "w1") -> RemoteAPI.StartProblem? {
+            RemoteAPI.startProblem(workspaceId: workspace, folder: folder, prompt: prompt, mode: mode, workspaces: [ws], known: known)
+        }
+        check("start: a known folder and mode are accepted", problem() == nil && problem(mode: "plan") == nil
+              && problem(mode: "acceptEdits") == nil)
+        check("start: an unknown folder is refused", problem("/Users/ada/code") == .unknownFolder
+              && problem("/Users/ada/code/api/") == .unknownFolder && problem("/Users/ada/code/api/../../..") == .unknownFolder)
+        check("start: bypassing permissions is refused", problem(mode: "bypassPermissions") == .badMode
+              && problem(mode: "--dangerously-skip-permissions") == .badMode && problem(mode: "dontAsk") == .badMode)
+        check("start: an unknown workspace is refused", problem(workspace: "w2") == .unknownWorkspace)
+        check("start: a prompt with a NUL byte is refused", problem(prompt: "a\u{0}b") == .badPrompt
+              && problem(prompt: String(repeating: "x", count: 20_001)) == .badPrompt)
+
+        // tmux gets the command as separate arguments; nothing tmux expands comes from outside.
+        let args = Launcher.tmuxArguments(session: "relay-0123456789abcdef", script: "exit 0")
+        check("start: tmux runs /bin/sh -c directly with no start directory",
+              args.prefix(8) == ["new-session", "-d", "-s", "relay-0123456789abcdef", "-x", "120", "-y", "40"]
+              && Array(args.suffix(3)) == ["/bin/sh", "-c", "exit 0"] && !args.dropLast(3).contains("-c"))
+
+        // Run the real script with /bin/sh and a stand-in claude that prints what it got.
+        let dir = Paths.support.appendingPathComponent("launch", isDirectory: true)
+        let folder = dir.appendingPathComponent("it's #(touch CANARY) $HOME `id`", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let stub = dir.appendingPathComponent("claude-stub")
+        try? "#!/bin/sh\nprintf 'cwd=%s\\n' \"$PWD\"\nprintf 'launch=%s\\n' \"$RELAY_LAUNCH_ID\"\nprintf 'config=%s\\n' \"${CLAUDE_CONFIG_DIR-unset}\"\nfor a in \"$@\"; do printf 'arg=[%s]\\n' \"$a\"; done\n"
+            .write(to: stub, atomically: true, encoding: .utf8)
+        chmod(stub.path, 0o755)
+        func run(_ prompt: String, mode: String = "default", workspace: Workspace = ws) -> [String] {
+            let script = Launcher.detachedScript(workspace: workspace, folder: folder.path, prompt: prompt, mode: mode,
+                                                 launchId: "0123456789abcdef", claude: Shell.quote(stub.path))
+            let tmuxArgs = Launcher.tmuxArguments(session: "relay-0123456789abcdef", script: script)
+            guard !tmuxArgs.contains(where: { $0.hasSuffix(";") }) else { return ["tmux would split this command"] }
+            return Proc.run("/bin/sh", ["-c", script], timeout: 10).stdout.split(separator: "\n").map(String.init)
+        }
+        let hostile = "'; rm -rf ~; echo '$(touch CANARY) `touch CANARY` \\'\nsecond line"
+        let out = run(hostile, mode: "plan")
+        check("start: a hostile prompt arrives as one argument after --",
+              out == ["cwd=" + folder.path, "launch=0123456789abcdef", "config=unset", "arg=[--permission-mode]", "arg=[plan]",
+                      "arg=[--]", "arg=['; rm -rf ~; echo '$(touch CANARY) `touch CANARY` \\'", "second line]"])
+        check("start: nothing in the prompt or folder ran", !FileManager.default.fileExists(atPath: dir.appendingPathComponent("CANARY").path)
+              && !FileManager.default.fileExists(atPath: folder.appendingPathComponent("CANARY").path))
+        check("start: a prompt can't pass itself off as a flag",
+              run("--dangerously-skip-permissions").suffix(2) == ["arg=[--]", "arg=[--dangerously-skip-permissions ]"])
+        check("start: a one-word prompt isn't taken for a claude command", run("purge").suffix(2) == ["arg=[--]", "arg=[purge ]"])
+        check("start: no prompt, no arguments", run("  \n ").filter { $0.hasPrefix("arg=") }.isEmpty)
+        let account = Workspace(id: "w2", name: "Acme", configDir: "/Users/ada/.claude-workspaces/it's", colorHex: "#5B8DEF")
+        check("start: the workspace's account is used", run("hi there", workspace: account).contains("config=/Users/ada/.claude-workspaces/it's"))
     }
 
     // MARK: - Push timing

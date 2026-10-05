@@ -18,6 +18,7 @@ TOKEN=$(/usr/bin/plutil -extract token raw -o - "$CONF" 2>/dev/null)
 [ -n "$PORT" ] && [ -n "$TOKEN" ] || { cat >/dev/null; exit 0; }
 
 # The hook runs as a child of the claude process; its tty identifies the terminal tab.
+# RELAY_LAUNCH_ID is set for agents started from the phone (tmux), so Relay can match them exactly.
 CLAUDE_PID="$PPID"
 TTY=$(/bin/ps -o tty= -p "$CLAUDE_PID" 2>/dev/null | tr -d ' ')
 
@@ -39,6 +40,7 @@ ARGS=(
   -H "X-Relay-Entrypoint: ${CLAUDE_CODE_ENTRYPOINT:-}"
   -H "X-Relay-Account: ${CLAUDE_CODE_USER_EMAIL:-}"
   -H "X-Relay-Exec: ${CLAUDE_CODE_EXECPATH:-}"
+  -H "X-Relay-Launch: ${RELAY_LAUNCH_ID:-}"
   "http://127.0.0.1:$PORT/hook/$EVENT"
 )
 
@@ -72,6 +74,7 @@ if [ "$EVENT" = "Wait" ]; then
       -H "X-Relay-Tmux: ${TMUX:-}" -H "X-Relay-Tmux-Pane: ${TMUX_PANE:-}" \
       -H "X-Relay-Iterm-Session: ${ITERM_SESSION_ID:-}" -H "X-Relay-Entrypoint: ${CLAUDE_CODE_ENTRYPOINT:-}" \
       -H "X-Relay-Account: ${CLAUDE_CODE_USER_EMAIL:-}" -H "X-Relay-Exec: ${CLAUDE_CODE_EXECPATH:-}" \
+      -H "X-Relay-Launch: ${RELAY_LAUNCH_ID:-}" \
       "http://127.0.0.1:$PORT/hook/Wait" 2>/dev/null &
     CURL=$!
     wait $CURL

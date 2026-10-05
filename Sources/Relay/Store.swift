@@ -277,6 +277,7 @@ final class Store: ObservableObject {
             itermSession: request.header("x-relay-iterm-session").nonEmpty,
             entrypoint: request.header("x-relay-entrypoint").nonEmpty)
         let pid = Int32(request.header("x-relay-pid") ?? "")
+        let launchId = request.header("x-relay-launch").nonEmpty
 
         let holds = event == "PermissionRequest" || event == "Wait"
         if !holds { exchange.respond(.empty) }
@@ -287,6 +288,7 @@ final class Store: ObservableObject {
                 if holds { exchange.respond(.empty) }
                 return
             }
+            if let launchId { self.claimLaunch(launchId, sessionId: sessionId) }
             self.apply(event: event, payload: payload, sessionId: sessionId, wsId: wsId,
                        loc: loc, pid: pid, exchange: exchange)
         }
@@ -332,6 +334,7 @@ final class Store: ObservableObject {
 
     private func apply(event: String, payload: [String: Any], sessionId: String, wsId: String,
                        loc: TerminalLocation, pid: Int32?, exchange: HTTPExchange) {
+        let isNew = sessions[sessionId] == nil
         var s = sessions[sessionId] ?? {
             handleCounter += 1
             return AgentSession(id: sessionId, workspaceId: wsId, cwd: payload["cwd"] as? String ?? "",
@@ -339,6 +342,7 @@ final class Store: ObservableObject {
         }()
         s.workspaceId = wsId
         if let cwd = payload["cwd"] as? String, !cwd.isEmpty { s.cwd = cwd }
+        if isNew || event == "SessionStart" { noteFolder(s.cwd, workspace: wsId) }
         if let pid, pid != s.pid || s.pidStart == nil {
             s.pid = pid
             s.pidStart = Self.processStart(pid)
@@ -597,6 +601,99 @@ final class Store: ObservableObject {
                 self.items[i].nextStepsState = r.status == 0 ? .ready : .failed
             }
         }
+    }
+
+    // MARK: - Starting agents from the phone
+
+    /// An agent the phone started in tmux that hasn't reported in yet ("Starting…"), or that failed to.
+    struct PendingLaunch: Identifiable, Equatable {
+        var id: String
+        var workspaceId: String
+        var folder: String
+        var prompt: String
+        var mode: String
+        var startedAt = Date()
+        /// What went wrong, with the last lines of its tmux pane.
+        var error: String?
+        /// The session it became, once its hooks reported in.
+        var sessionId: String?
+    }
+
+    @Published private(set) var launches: [PendingLaunch] = []
+    static let launchTimeout: TimeInterval = 30
+
+    func addLaunch(_ launch: PendingLaunch) {
+        launches.append(launch)
+        let id = launch.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.launchTimeout) { [weak self] in self?.launchTimedOut(id) }
+        // Rows stay a while so the phone can follow or read them, then go.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15 * 60) { [weak self] in self?.dismissLaunch(id) }
+    }
+
+    func dismissLaunch(_ id: String) {
+        launches.removeAll { $0.id == id }
+    }
+
+    /// The hook of an agent started from the phone carries its launch id (RELAY_LAUNCH_ID).
+    func claimLaunch(_ id: String, sessionId: String) {
+        guard let i = launches.firstIndex(where: { $0.id == id }), launches[i].sessionId == nil else { return }
+        launches[i].sessionId = sessionId
+        launches[i].error = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.dismissLaunch(id) }
+    }
+
+    private func launchTimedOut(_ id: String) {
+        guard let launch = launches.first(where: { $0.id == id }), launch.sessionId == nil, launch.error == nil else { return }
+        workQueue.async {
+            let screen = Launcher.capturePane(target: "relay-\(id)", lines: 15)
+            DispatchQueue.main.async {
+                guard let i = self.launches.firstIndex(where: { $0.id == id }), self.launches[i].sessionId == nil else { return }
+                var text = "It didn't start within \(Int(Self.launchTimeout)) seconds."
+                if let screen, !screen.isEmpty { text += " Its terminal shows:\n" + screen }
+                else { text += " Its tmux session has already closed." }
+                self.launches[i].error = text
+            }
+        }
+    }
+
+    // MARK: - Folders the phone may start agents in
+
+    /// Folders agents were started in, per workspace, newest first.
+    private var recentFolders: [String: [String]] {
+        get { UserDefaults.standard.dictionary(forKey: "recentFolders") as? [String: [String]] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "recentFolders") }
+    }
+
+    /// Folders you pinned on the Mac (Settings → Phone); offered for every workspace.
+    var pinnedFolders: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "pinnedFolders") ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "pinnedFolders"); objectWillChange.send() }
+    }
+
+    private func noteFolder(_ folder: String, workspace: String) {
+        guard folder.hasPrefix("/"), !Demo.isOn else { return }
+        var all = recentFolders
+        var list = all[workspace] ?? []
+        guard list.first != folder else { return }
+        list.removeAll { $0 == folder }
+        list.insert(folder, at: 0)
+        all[workspace] = Array(list.prefix(30))
+        recentFolders = all
+    }
+
+    /// The only folders the phone may start an agent in for a workspace: pinned ones first, then where
+    /// its agents run now and ran before. Each must still exist.
+    func knownFolders(workspace id: String) -> [(path: String, pinned: Bool)] {
+        let live = sessions.values.filter { $0.workspaceId == id }.sorted { $0.updatedAt > $1.updatedAt }.map(\.cwd)
+        var seen = Set<String>()
+        var out: [(String, Bool)] = []
+        for (path, pinned) in pinnedFolders.map({ ($0, true) }) + (live + (recentFolders[id] ?? [])).map({ ($0, false) }) {
+            var isDir: ObjCBool = false
+            guard path.hasPrefix("/"), seen.insert(path).inserted,
+                  FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
+            out.append((path, pinned))
+        }
+        return out
     }
 
     // MARK: - Kill

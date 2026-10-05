@@ -17,6 +17,10 @@ final class RemoteAPI {
     private var push: WebPush { pushOverride ?? .shared }
     /// Shows a short message on the Mac.
     var notify: (String) -> Void = { Store.shared.showToast($0) }
+    /// Starts an agent in tmux (a seam for the self-tests). Runs off the main thread.
+    var launch: (Workspace, String, String, String) -> Result<String, Launcher.LaunchError> = {
+        Launcher.newDetachedTmux(workspace: $0, folder: $1, prompt: $2, mode: $3)
+    }
 
     init(store: Store, devices: DeviceStore = .shared, push: WebPush? = nil) {
         self.store = store
@@ -29,6 +33,8 @@ final class RemoteAPI {
         switch (method, path) {
         case ("GET", "/"), ("GET", "/remote"), ("GET", "/api/state"), ("GET", "/api/session"): return .read
         case ("POST", "/api/answer"): return .answer
+        case ("GET", "/api/folders"), ("POST", "/api/start"), ("POST", "/api/kill"), ("GET", "/api/terminal"),
+             ("POST", "/api/launch/dismiss"): return .control
         // A paired device's own settings.
         case ("POST", "/api/push/subscribe"), ("POST", "/api/push/unsubscribe"), ("POST", "/api/push/prefs"),
              ("POST", "/api/push/test"), ("POST", "/api/device/forget"): return .read
@@ -54,6 +60,9 @@ final class RemoteAPI {
             ex.respond(.text(Self.page(), type: "text/html; charset=utf-8"))
         case ("GET", "/api/state"):
             DispatchQueue.main.async { ex.respond(.json(self.snapshot(caps: caps, device: device))) }
+        case ("GET", "/api/folders"), ("POST", "/api/start"), ("POST", "/api/kill"), ("GET", "/api/terminal"),
+             ("POST", "/api/launch/dismiss"):
+            control(req, ex, from: device?.name ?? "Your phone")
         case ("GET", "/api/session"):
             let id = req.query["id"] ?? ""
             DispatchQueue.main.async {
@@ -100,7 +109,8 @@ final class RemoteAPI {
     /// Everything the page shows. Call on the main thread.
     func snapshot(caps: Set<Capability>, device: Device? = nil) -> [String: Any] {
         var snap = Self.snapshot(workspaces: store.workspaces, sessions: Array(store.sessions.values), items: store.items,
-                                 filter: store.workspaceFilter, heat: HeatMonitor.shared.heat, caps: caps)
+                                 filter: store.workspaceFilter, heat: HeatMonitor.shared.heat, caps: caps,
+                                 launches: store.launches, canKill: store.canKill)
         if let device = device.flatMap({ devices.device($0.id) }) {
             let p = device.pushPrefs
             snap["device"] = [
@@ -113,7 +123,9 @@ final class RemoteAPI {
     }
 
     static func snapshot(workspaces: [Workspace], sessions: [AgentSession], items: [InboxItem], filter: String?,
-                         heat: [String: SessionHeat], caps: Set<Capability>) -> [String: Any] {
+                         heat: [String: SessionHeat], caps: Set<Capability>, launches: [Store.PendingLaunch] = [],
+                         canKill: (String) -> Bool = { _ in false }) -> [String: Any] {
+        let control = caps.contains(.control)
         let workspaces = workspaces.map { ["id": $0.id, "name": $0.name, "color": $0.colorHex, "email": $0.email ?? ""] }
         let sessions = sessions.sorted { $0.startedAt < $1.startedAt }.map { s -> [String: Any] in
             var d: [String: Any] = [
@@ -125,6 +137,11 @@ final class RemoteAPI {
             let h = heat[s.id]
             d["cpu"] = Int((h?.cpu ?? 0).rounded())
             d["heat"] = Self.heatName(h?.level ?? .none)
+            if control {
+                d["canKill"] = canKill(s.id)
+                d["tmux"] = !(s.terminal.tmuxPane ?? "").isEmpty
+                d["title"] = s.displayName
+            }
             return d
         }
         // Oldest first: new cards are appended, so nothing moves under a finger mid-tap.
@@ -141,8 +158,16 @@ final class RemoteAPI {
             }
             return d
         }
-        return ["workspaces": workspaces, "sessions": sessions, "items": items, "filter": filter ?? "",
-                "caps": Capability.allCases.filter(caps.contains).map(\.rawValue)]
+        var snap: [String: Any] = ["workspaces": workspaces, "sessions": sessions, "items": items, "filter": filter ?? "",
+                                   "caps": Capability.allCases.filter(caps.contains).map(\.rawValue)]
+        if control {
+            snap["launches"] = launches.map { l -> [String: Any] in
+                ["id": l.id, "workspaceId": l.workspaceId, "folder": (l.folder as NSString).lastPathComponent,
+                 "prompt": String(l.prompt.prefix(200)), "mode": l.mode, "startedAt": l.startedAt.timeIntervalSince1970 * 1000,
+                 "error": l.error ?? "", "sessionId": l.sessionId ?? ""]
+            }
+        }
+        return snap
     }
 
     static func heatName(_ level: HeatLevel) -> String {
@@ -150,6 +175,116 @@ final class RemoteAPI {
         case .none: return "none"
         case .warm: return "warm"
         case .hot: return "hot"
+        }
+    }
+
+    // MARK: Control (start, kill, terminal)
+
+    enum StartProblem: Equatable {
+        case unknownWorkspace, badMode, unknownFolder, badPrompt
+
+        var message: String {
+            switch self {
+            case .unknownWorkspace: return "That workspace isn't on this Mac anymore."
+            case .badMode: return "Pick Default, Plan or Accept edits."
+            case .unknownFolder: return "Relay only starts agents in folders it knows: where your agents ran, or folders pinned in Settings → Phone on the Mac."
+            case .badPrompt: return "That prompt can't be used."
+            }
+        }
+    }
+
+    /// Whether the phone may start this agent: a known workspace, one of the folders Relay already knows
+    /// for it (never a path typed on the phone), a mode other than bypassing permissions, a sane prompt.
+    static func startProblem(workspaceId: String, folder: String, prompt: String, mode: String,
+                             workspaces: [Workspace], known: (String) -> [String]) -> StartProblem? {
+        guard workspaces.contains(where: { $0.id == workspaceId }) else { return .unknownWorkspace }
+        guard Launcher.phoneModes.contains(mode) else { return .badMode }
+        guard known(workspaceId).contains(folder) else { return .unknownFolder }
+        guard prompt.count <= 20_000, !prompt.contains("\0") else { return .badPrompt }
+        return nil
+    }
+
+    private func control(_ req: HTTPRequest, _ ex: HTTPExchange, from deviceName: String) {
+        let body = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+        switch req.path {
+        case "/api/folders":
+            DispatchQueue.main.async {
+                let list = self.store.workspaces.map { ws -> [String: Any] in
+                    let folders = self.store.knownFolders(workspace: ws.id).map { f -> [String: Any] in
+                        ["path": f.path, "name": (f.path as NSString).lastPathComponent,
+                         "short": (f.path as NSString).abbreviatingWithTildeInPath, "pinned": f.pinned]
+                    }
+                    return ["id": ws.id, "name": ws.name, "color": ws.colorHex, "folders": folders]
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let tmux = Proc.which("tmux") != nil
+                    ex.respond(.json(["ok": true, "workspaces": list, "tmux": tmux, "modes": Launcher.phoneModes]))
+                }
+            }
+        case "/api/start":
+            let wsId = body["workspaceId"] as? String ?? ""
+            let folder = body["folder"] as? String ?? ""
+            let prompt = body["prompt"] as? String ?? ""
+            let mode = body["mode"] as? String ?? "default"
+            DispatchQueue.main.async {
+                if let problem = Self.startProblem(workspaceId: wsId, folder: folder, prompt: prompt, mode: mode,
+                                                   workspaces: self.store.workspaces,
+                                                   known: { self.store.knownFolders(workspace: $0).map(\.path) }) {
+                    ex.respond(.json(["ok": false, "error": problem.message])); return
+                }
+                guard let ws = self.store.workspace(wsId) else { return }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let result = self.launch(ws, folder, prompt, mode)
+                    DispatchQueue.main.async {
+                        switch result {
+                        case .success(let id):
+                            self.store.addLaunch(Store.PendingLaunch(id: id, workspaceId: ws.id, folder: folder, prompt: prompt, mode: mode))
+                            self.notify("\(deviceName) started an agent in \((folder as NSString).lastPathComponent)")
+                            ex.respond(.json(["ok": true, "launchId": id]))
+                        case .failure(let e):
+                            ex.respond(.json(["ok": false, "error": e.message, "needsTmux": e == .noTmux]))
+                        }
+                    }
+                }
+            }
+        case "/api/kill":
+            let sid = body["sessionId"] as? String ?? ""
+            DispatchQueue.main.async {
+                // The same path as Kill agent on the Mac.
+                guard let s = self.store.sessions[sid], self.store.canKill(sid) else {
+                    ex.respond(.json(["ok": false, "error": "This agent can't be stopped from Relay."])); return
+                }
+                self.store.killAgent(sid)
+                if self.store.sessions[sid] == nil {
+                    self.notify("\(deviceName) stopped @\(s.handle)")
+                    ex.respond(.json(["ok": true]))
+                } else {
+                    ex.respond(.json(["ok": false, "error": "Couldn't stop @\(s.handle)."]))
+                }
+            }
+        case "/api/terminal":
+            let sid = req.query["id"] ?? ""
+            DispatchQueue.main.async {
+                guard let s = self.store.sessions[sid], let pane = s.terminal.tmuxPane, !pane.isEmpty else {
+                    ex.respond(.json(["ok": false, "error": "Only agents running in tmux have a terminal view."])); return
+                }
+                let socket = s.terminal.tmux.flatMap { $0.split(separator: ",").first.map(String.init) }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    if let text = Launcher.capturePane(target: pane, socket: socket, lines: 60) {
+                        ex.respond(.json(["ok": true, "text": text]))
+                    } else {
+                        ex.respond(.json(["ok": false, "error": "Couldn't read its tmux pane."]))
+                    }
+                }
+            }
+        case "/api/launch/dismiss":
+            let id = body["id"] as? String ?? ""
+            DispatchQueue.main.async {
+                self.store.dismissLaunch(id)
+                ex.respond(.json(["ok": true]))
+            }
+        default:
+            ex.respond(.notFound)
         }
     }
 
