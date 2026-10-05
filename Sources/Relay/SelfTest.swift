@@ -23,6 +23,7 @@ enum SelfTest {
         harness()
         remoteAPI()
         devices()
+        tailscale()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -250,5 +251,170 @@ enum SelfTest {
         check("devices: the 21st failure cools down", cool.isCoolingDown(now.addingTimeInterval(22)))
         check("devices: no pairing during the cool-down", !cool.consumePairingCode(coolCode, now: now.addingTimeInterval(22)))
         check("devices: the cool-down ends after 60 s", !cool.isCoolingDown(now.addingTimeInterval(82)))
+    }
+
+    // MARK: - Tailscale
+
+    private static func tailscale() {
+        func status(_ json: String) -> Tailscale.Status? { Tailscale.parseStatus(Data(json.utf8)) }
+        func serve(_ json: String) -> Tailscale.ServeStatus? { Tailscale.parseServeStatus(Data(json.utf8)) }
+        func port(_ json: String, previous: UInt16? = nil) -> Result<(port: UInt16, existing: Bool), Tailscale.Failure>? {
+            serve(json).map { Tailscale.choosePort($0, previous: previous) }
+        }
+        func picks(_ json: String, _ expected: UInt16, existing: Bool, previous: UInt16? = nil) -> Bool {
+            if case .success(let c)? = port(json, previous: previous) { return c.port == expected && c.existing == existing }
+            return false
+        }
+
+        let running = """
+        {"Version":"1.88.1","TUN":false,"BackendState":"Running","HaveNodeKey":true,"AuthURL":"",
+         "TailscaleIPs":["100.101.102.103"],
+         "Self":{"ID":"n1","HostName":"Ada's MacBook Pro","DNSName":"adas-macbook-pro.tail1234.ts.net.","Online":true},
+         "Health":[],"MagicDNSSuffix":"tail1234.ts.net",
+         "CurrentTailnet":{"Name":"ada@example.com","MagicDNSSuffix":"tail1234.ts.net","MagicDNSEnabled":true},
+         "CertDomains":["adas-macbook-pro.tail1234.ts.net"],"Peer":{},"User":{}}
+        """
+        let r = status(running)
+        check("tailscale: parses a running status", r?.backendState == "Running" && r?.dnsName == "adas-macbook-pro.tail1234.ts.net"
+              && r?.magicDNS == true && r?.certDomains == ["adas-macbook-pro.tail1234.ts.net"])
+        check("tailscale: a running status with MagicDNS is usable", r.map(Tailscale.problem(with:)) == .some(nil))
+        let stopped = status(#"{"BackendState":"Stopped","Self":{"DNSName":"mac.tail1234.ts.net."},"CertDomains":null,"MagicDNSSuffix":"tail1234.ts.net"}"#)
+        check("tailscale: a stopped Tailscale is reported", stopped.flatMap(Tailscale.problem(with:)) == .notRunning("Stopped")
+              && stopped?.certDomains == [])
+        check("tailscale: a signed-out Tailscale asks to sign in",
+              status(#"{"BackendState":"NeedsLogin","Self":null}"#).flatMap(Tailscale.problem(with:)) == .needsLogin)
+        check("tailscale: MagicDNS off is reported", status(#"""
+            {"BackendState":"Running","Self":{"DNSName":"mac.tail1234.ts.net."},"CurrentTailnet":{"MagicDNSEnabled":false}}
+            """#).flatMap(Tailscale.problem(with:)) == .magicDNSOff)
+        check("tailscale: no name is reported", status(#"""
+            {"BackendState":"Running","Self":{"DNSName":""},"CurrentTailnet":{"MagicDNSEnabled":true}}
+            """#).flatMap(Tailscale.problem(with:)) == .noName)
+        check("tailscale: garbage isn't a status", status("tailscale: not running") == nil && serve("<html>") == nil)
+
+        let ours = #"{"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47902"}}}}}"#
+        let foreign443 = #"{"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}}}}"#
+        check("tailscale: nothing served means 443 is free", picks("{}\n", 443, existing: false) && picks("null\n", 443, existing: false)
+              && picks("", 443, existing: false))
+        check("tailscale: 443 already Relay's is kept", picks(ours, 443, existing: true) && serve(ours)?.relayPorts == [443])
+        check("tailscale: 443 serving something else falls back to 8443",
+              picks(foreign443, 8443, existing: false) && serve(foreign443)?.use(443) == .other)
+        let both = #"""
+            {"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true}},
+             "Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}},
+                    "mac.tail1234.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47902"}}}}}
+            """#
+        check("tailscale: Relay's existing 8443 entry is kept", picks(both, 8443, existing: true))
+        let taken = #"""
+            {"TCP":{"443":{"HTTPS":true},"8443":{"TCPForward":"127.0.0.1:22"}},
+             "Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Text":"hello"}}}}}
+            """#
+        if case .failure(let f)? = port(taken) { check("tailscale: 443 and 8443 both taken is refused", f == .portsTaken) }
+        else { check("tailscale: 443 and 8443 both taken is refused", false) }
+        check("tailscale: a TCP forward on 443 counts as taken",
+              serve(#"{"TCP":{"443":{"TCPForward":"127.0.0.1:47902"}}}"#)?.use(443) == .other)
+        check("tailscale: a foreground serve on 443 counts as taken", picks(#"""
+            {"Foreground":{"abc123":{"TCP":{"443":{"HTTPS":true}},
+             "Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47902"}}}}}}}
+            """#, 8443, existing: false))
+        check("tailscale: other mounts next to Relay's are left alone", serve(#"""
+            {"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:443":{"Handlers":{
+             "/":{"Proxy":"http://127.0.0.1:47902"},"/grafana":{"Proxy":"http://127.0.0.1:3000"}}}}}
+            """#)?.use(443) == .relay)
+        check("tailscale: the last port used is preferred while free", picks("{}", 8443, existing: false, previous: 8443)
+              && picks("{}", 443, existing: false, previous: 9000))
+        check("tailscale: Funnel on a port is noticed", serve(#"""
+            {"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47902"}}}},
+             "AllowFunnel":{"mac.tail1234.ts.net:443":true}}
+            """#)?.funnel == [443])
+        check("tailscale: Relay's proxy target is recognised", Tailscale.isRelayTarget("http://127.0.0.1:47902")
+              && Tailscale.isRelayTarget("http://localhost:47902/") && !Tailscale.isRelayTarget("https://127.0.0.1:47902")
+              && !Tailscale.isRelayTarget("http://127.0.0.1:4790") && !Tailscale.isRelayTarget("http://10.0.0.2:47902")
+              && !Tailscale.isRelayTarget("http://127.0.0.1:47902/api"))
+        let notEnabled = "\nServe is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=nAbC123\n\n"
+        check("tailscale: the enable-HTTPS link is found in CLI output",
+              Tailscale.enableLink(in: notEnabled)?.absoluteString == "https://login.tailscale.com/f/serve?node=nAbC123"
+              && Tailscale.enableLink(in: "error: no such host") == nil)
+        check("tailscale: URLs omit the default port",
+              Tailscale.url(name: "mac.tail1234.ts.net", port: 443)?.absoluteString == "https://mac.tail1234.ts.net"
+              && Tailscale.url(name: "mac.tail1234.ts.net", port: 8443)?.absoluteString == "https://mac.tail1234.ts.net:8443")
+        check("tailscale: failures explain themselves", Tailscale.Failure.httpsDisabled(nil).link == Tailscale.adminDNS
+              && Tailscale.Failure.notInstalled.link != nil && !Tailscale.Failure.portsTaken.message.isEmpty)
+
+        fakeTailscale(running: running, ours: ours, foreign443: foreign443)
+    }
+
+    /// Drives enable() and disable() against a stand-in `tailscale` script that logs every call.
+    private static func fakeTailscale(running: String, ours: String, foreign443: String) {
+        let dir = Paths.support.appendingPathComponent("fake-tailscale", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let cli = dir.appendingPathComponent("tailscale").path
+        let script = """
+        #!/bin/bash
+        D="$(cd "$(dirname "$0")" && pwd)"
+        echo "$*" >> "$D/calls.log"
+        case "$1 $2" in
+          "status --json") cat "$D/status.json"; exit 0 ;;
+          "serve status") cat "$D/serve.json" 2>/dev/null || echo "{}"; exit 0 ;;
+        esac
+        if [ "$1" = serve ] && [ "$2" = --bg ]; then
+          [ -f "$D/enable.txt" ] && { cat "$D/enable.txt"; exit 0; }
+          cp "$D/after.json" "$D/serve.json"; echo "Available within your tailnet"; exit 0
+        fi
+        if [ "$1" = serve ] && [ "${@: -1}" = off ]; then cp "$D/off.json" "$D/serve.json"; exit 0; fi
+        echo "unexpected: $*" >&2; exit 1
+        """
+        func put(_ name: String, _ text: String) { try? text.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+        func reset(serve: String, after: String = "{}", off: String = "{}", enableText: String? = nil) {
+            for f in ["calls.log", "serve.json", "enable.txt"] { try? FileManager.default.removeItem(at: dir.appendingPathComponent(f)) }
+            put("status.json", running); put("serve.json", serve); put("after.json", after); put("off.json", off)
+            if let enableText { put("enable.txt", enableText) }
+        }
+        func calls() -> [String] {
+            ((try? String(contentsOf: dir.appendingPathComponent("calls.log"), encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+        }
+        put("tailscale", script)
+        chmod(cli, 0o755)
+
+        reset(serve: "{}", after: ours)
+        var steps: [Tailscale.Step] = []
+        let fresh = Tailscale.enable(cli: cli, previousPort: nil) { steps.append($0) }
+        check("tailscale: enable serves Relay on 443", (try? fresh.get())?.url.absoluteString == "https://adas-macbook-pro.tail1234.ts.net"
+              && calls().contains("serve --bg --https=443 http://127.0.0.1:47902") && steps == Tailscale.Step.allCases)
+
+        reset(serve: ours)
+        let again = Tailscale.enable(cli: cli, previousPort: 443)
+        check("tailscale: enable keeps an entry Relay already has", (try? again.get())?.port == 443
+              && !calls().contains { $0.hasPrefix("serve --bg") })
+
+        let ours8443 = foreign443.replacingOccurrences(of: #"}}}}}"#, with: #"}}},"mac.tail1234.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47902"}}}}}"#)
+            .replacingOccurrences(of: #""443":{"HTTPS":true}"#, with: #""443":{"HTTPS":true},"8443":{"HTTPS":true}"#)
+        reset(serve: foreign443, after: ours8443)
+        let fallback = Tailscale.enable(cli: cli, previousPort: nil)
+        check("tailscale: enable leaves a foreign 443 alone and uses 8443",
+              (try? fallback.get())?.url.absoluteString == "https://adas-macbook-pro.tail1234.ts.net:8443"
+              && calls().contains("serve --bg --https=8443 http://127.0.0.1:47902")
+              && !calls().contains { $0.contains("--https=443") })
+
+        reset(serve: "{}", enableText: "\nServe is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=nTEST\n\n")
+        if case .failure(.httpsDisabled(let link)) = Tailscale.enable(cli: cli, previousPort: nil) {
+            check("tailscale: HTTPS certificates off links to the page that turns them on",
+                  link?.absoluteString == "https://login.tailscale.com/f/serve?node=nTEST")
+        } else {
+            check("tailscale: HTTPS certificates off links to the page that turns them on", false)
+        }
+
+        reset(serve: ours8443, off: foreign443)
+        check("tailscale: disable removes only Relay's entry", Tailscale.disable(cli: cli) == nil
+              && calls().filter { $0.hasSuffix(" off") } == ["serve --https=8443 --set-path=/ off"])
+        reset(serve: foreign443)
+        check("tailscale: disable never touches a foreign entry", Tailscale.disable(cli: cli) == nil
+              && !calls().contains { $0.hasSuffix(" off") })
+
+        put("status.json", #"{"BackendState":"Stopped","Self":{"DNSName":"mac.tail1234.ts.net."}}"#)
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("calls.log"))
+        check("tailscale: enable stops at a stopped Tailscale", Tailscale.enable(cli: cli, previousPort: nil) == .failure(.notRunning("Stopped"))
+              && calls() == ["status --json"])
+        check("tailscale: enable without the CLI says to install it", Tailscale.enable(cli: nil, previousPort: nil) == .failure(.notInstalled))
     }
 }
