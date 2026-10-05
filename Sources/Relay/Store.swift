@@ -384,6 +384,15 @@ final class Store: ObservableObject {
         case "PreToolUse":
             clearFallbackCards(sessionId)
             items.removeAll { $0.sessionId == sessionId && !$0.isActionable }   // the turn resumed
+            // The agent started another tool, so a question it asked was answered somewhere else.
+            let moved = Self.questionsMovedPast(items: items, sessionId: sessionId,
+                                                tool: payload["tool_name"] as? String,
+                                                fromSubagent: payload["agent_id"] != nil)
+            for id in moved { pending.removeValue(forKey: id)?.respond(.empty) }
+            if !moved.isEmpty {
+                items.removeAll { moved.contains($0.id) }
+                if s.status == .waiting && !hasActionable(sessionId) { s.status = .working }
+            }
             if s.status != .waiting { s.status = .working }
 
         case "PostToolUse":
@@ -768,6 +777,15 @@ final class Store: ObservableObject {
         }
         let json = jsonString(input)
         return Set(same.filter { $0.toolInputJSON == json }.map(\.id))
+    }
+
+    /// Open questions an agent has moved past: it is starting another tool (PreToolUse), which it can't
+    /// while AskUserQuestion blocks it. Tools run one after another around a question, so this only
+    /// happens once the question was answered (in the terminal or the Claude app). A subagent's tools
+    /// run on their own, so they say nothing about the main agent's question.
+    static func questionsMovedPast(items: [InboxItem], sessionId: String, tool: String?, fromSubagent: Bool) -> Set<String> {
+        guard let tool, tool != "AskUserQuestion", !fromSubagent else { return [] }
+        return Set(items.filter { $0.sessionId == sessionId && $0.kind == .question && $0.isLive }.map(\.id))
     }
 
     private func dropItem(_ id: String) {

@@ -93,6 +93,15 @@ enum SelfTest {
         check("inbox: fallback cards are left to their own clean-up", answered([fallback], "Bash", ["command": "ls"]).isEmpty)
         check("inbox: no tool name, nothing closes", answered([ask], nil, nil).isEmpty)
 
+        func moved(_ items: [InboxItem], _ tool: String?, session: String = "s1", subagent: Bool = false) -> Set<String> {
+            Store.questionsMovedPast(items: items, sessionId: session, tool: tool, fromSubagent: subagent)
+        }
+        check("inbox: the agent starting another tool closes its open question", moved([ask, bash, done], "Read") == [ask.id])
+        check("inbox: a second question doesn't close the first", moved([ask], "AskUserQuestion").isEmpty)
+        check("inbox: a subagent's tool leaves the question open", moved([ask], "Read", subagent: true).isEmpty)
+        check("inbox: another agent's tool leaves it open", moved([ask], "Read", session: "s2").isEmpty)
+        check("inbox: permission prompts aren't closed by other tools", moved([bash], "Read").isEmpty)
+
         check("inbox: Asking holds questions, prompts and MCP input requests",
               [ask, bash, elicit].allSatisfy(InboxFilter.asking.matches) && ![done, idle].contains(where: InboxFilter.asking.matches))
         check("inbox: Done holds finished and idle agents",

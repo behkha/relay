@@ -488,6 +488,7 @@ enum CardLogic {
     static func choose(_ index: Int, item: InboxItem, store: Store, ui: UIState) {
         // Same guard for clicks as for keys: nothing lands on a card that just replaced another.
         guard ui.acceptsChoiceKeys, stillShowing(item, store: store, ui: ui) else { return }
+        ui.autoOpened = false
         switch item.kind {
         case .question:
             let qs = item.questions

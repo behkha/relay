@@ -42,6 +42,9 @@ final class UIState: ObservableObject {
     @Published var attachShot = false
     /// When the card was opened from the menu with nothing to show.
     @Published var showAgentsList = false
+    /// The card popped open by itself for a question and you haven't touched it yet. If that question
+    /// is answered somewhere else, the card closes instead of moving on to other items.
+    var autoOpened = false
 
     // MARK: Undo window
 
@@ -71,6 +74,7 @@ final class UIState: ObservableObject {
 
     func schedule(itemId: String, label: String, kind: Commit.Kind = .sent, duration: Double = 2.0,
                   action: @escaping () -> Void) {
+        autoOpened = false
         flushCommit()
         let snap = Snapshot(questionStep: questionStep, multiSelection: multiSelection, collected: collected,
                             replyText: draftBeforeSend ?? replyText, attachShot: attachShot)
@@ -145,6 +149,7 @@ final class UIState: ObservableObject {
 
     func move(_ delta: Int, store: Store) {
         // Pick the neighbour first: committing may remove the current card from the list.
+        autoOpened = false
         let items = store.filteredItems
         guard !items.isEmpty else { return }
         let cur = items.firstIndex { $0.id == currentItem(in: store)?.id } ?? 0

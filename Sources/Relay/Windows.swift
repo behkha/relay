@@ -102,6 +102,7 @@ final class OverlayController: NSObject {
         // Card key state drives the key hints ("J", "esc", …).
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: card, queue: .main) { [weak self] _ in
             self?.ui.cardIsKey = true
+            self?.ui.autoOpened = false   // you're using the card now
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: card, queue: .main) { [weak self] _ in
             self?.ui.cardIsKey = false
@@ -198,6 +199,16 @@ final class OverlayController: NSObject {
         if !ui.pillExpanded && !ui.cardOpen { DispatchQueue.main.async { self.positionPill() } }
         // Keep the current item valid; close when the inbox empties and the card was opened for an item.
         if ui.cardOpen {
+            if ui.pinnedItem(in: store) == nil, ui.autoOpened, ui.currentItemId != nil {
+                // It popped open for a question that was then answered elsewhere (the terminal, the
+                // Claude app, the phone). Show the next question if one is waiting, else get out of the way.
+                if let next = store.filteredItems.first(where: InboxFilter.isAsking) {
+                    ui.currentItemId = next.id
+                } else {
+                    closeCard()
+                    return
+                }
+            }
             if ui.pinnedItem(in: store) == nil {
                 // The shown item was resolved (or none was pinned yet): pin the next one.
                 // Close once the filter has nothing left, but not when it was already empty
@@ -248,6 +259,7 @@ final class OverlayController: NSObject {
     func openCard(focus: Bool, itemId: String? = nil) {
         guard isPillVisible else { return }
         closeSide()
+        ui.autoOpened = false
         // An item the filter hides (a question while showing Done): show everything so it can appear.
         if let id = itemId, store.visibleItems.contains(where: { $0.id == id }),
            !store.filteredItems.contains(where: { $0.id == id }) {
@@ -274,6 +286,7 @@ final class OverlayController: NSObject {
     func closeCard() {
         guard ui.cardOpen else { return }
         ui.cardOpen = false
+        ui.autoOpened = false
         card.makeFirstResponder(nil)
         ui.replyFocused = false
         ui.showAgentsList = false
@@ -289,7 +302,10 @@ final class OverlayController: NSObject {
     private func itemArrived(_ item: InboxItem) {
         guard ui.openCardWhenAsked, item.isActionable,
               store.workspaceFilter == nil || store.workspaceFilter == item.workspaceId else { return }
-        if !ui.cardOpen { openCard(focus: false, itemId: item.id) }
+        if !ui.cardOpen {
+            openCard(focus: false, itemId: item.id)
+            ui.autoOpened = true
+        }
     }
 
     private func openSession(_ s: AgentSession) {
