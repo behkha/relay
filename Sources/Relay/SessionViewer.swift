@@ -42,10 +42,13 @@ final class TranscriptReader: ObservableObject {
         var title: String?
         var prompt: String?
         var activity: String?
+        /// Background tasks still running.
+        var backgroundTasks = 0
     }
 
     /// Session title, the last instruction and what the agent did since (call off the main thread).
-    static func summary(path: String?) -> Summary {
+    /// `since`: when the agent's current process started; background tasks from before then died with the old one.
+    static func summary(path: String?, since: Date? = nil) -> Summary {
         guard let path, let handle = FileHandle(forReadingAtPath: path) else { return Summary() }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
@@ -60,7 +63,10 @@ final class TranscriptReader: ObservableObject {
         let lastUser = entries.lastIndex { $0.kind == .user }
         let prompt = lastUser.map { entries[$0].text }
         let tools = entries[(lastUser.map { $0 + 1 } ?? 0)...].filter { $0.kind == .tool }
-        return Summary(title: state.title, prompt: prompt, activity: activityLine(Array(tools)))
+        // Older than a day is a task whose end Relay never saw.
+        let cutoff = max(since ?? .distantPast, Date().addingTimeInterval(-24 * 3600))
+        let running = state.background.values.filter { $0 >= cutoff }.count
+        return Summary(title: state.title, prompt: prompt, activity: activityLine(Array(tools)), backgroundTasks: running)
     }
 
     /// One-line summary of a turn's tool calls, grouped by kind in the order they first happened:
@@ -193,12 +199,62 @@ final class TranscriptReader: ObservableObject {
         /// Which source `title` came from, so a weaker one never replaces a stronger one:
         /// 1 = Claude Code's AI title, 2 = the agent's name, 3 = a name the user gave the session.
         var titleRank = 0
+        /// Background tasks (shell commands, agents, workflows) started and not finished yet: id → start time.
+        var background: [String: Date] = [:]
+        /// Agents that ran in the background; messaging one again restarts it.
+        var asyncAgents: Set<String> = []
 
         mutating func setTitle(_ t: Any?, rank: Int) {
             guard let t = (t as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty,
                   rank >= titleRank else { return }
             title = t
             titleRank = rank
+        }
+    }
+
+    /// Follows background work: a backgrounded Bash command, an async agent or a workflow starts a task,
+    /// and Claude Code's `<task-notification>` (or a TaskStop call) ends it.
+    private static func trackBackground(_ rec: [String: Any], type: String, date: Date?, in state: inout BuildState) {
+        func finish(_ text: String) {
+            guard text.hasPrefix("<task-notification>"),
+                  let open = text.range(of: "<task-id>"),
+                  let close = text.range(of: "</task-id>", range: open.upperBound..<text.endIndex) else { return }
+            state.background.removeValue(forKey: String(text[open.upperBound..<close.lowerBound]))
+        }
+        switch type {
+        case "queue-operation":
+            if rec["operation"] as? String == "enqueue", let c = rec["content"] as? String { finish(c) }
+        case "user":
+            if let r = rec["toolUseResult"] as? [String: Any] {
+                let launched = r["status"] as? String == "async_launched"
+                if let id = r["backgroundTaskId"] as? String {
+                    state.background[id] = date ?? Date()
+                } else if launched, let id = r["agentId"] as? String {
+                    state.background[id] = date ?? Date()
+                    state.asyncAgents.insert(id)
+                } else if launched, let id = r["taskId"] as? String {
+                    state.background[id] = date ?? Date()
+                }
+            }
+            guard let msg = rec["message"] as? [String: Any] else { return }
+            if let c = msg["content"] as? String {
+                finish(c)
+            } else if let blocks = msg["content"] as? [[String: Any]] {
+                for b in blocks where b["type"] as? String == "text" { finish(b["text"] as? String ?? "") }
+            }
+        case "assistant":
+            guard let blocks = (rec["message"] as? [String: Any])?["content"] as? [[String: Any]] else { return }
+            for b in blocks where b["type"] as? String == "tool_use" {
+                let input = b["input"] as? [String: Any] ?? [:]
+                switch b["name"] as? String {
+                case "TaskStop", "KillShell", "KillBash":
+                    if let id = (input["task_id"] ?? input["shell_id"]) as? String { state.background.removeValue(forKey: id) }
+                case "SendMessage":
+                    if let to = input["to"] as? String, state.asyncAgents.contains(to) { state.background[to] = date ?? Date() }
+                default: break
+                }
+            }
+        default: break
         }
     }
 
@@ -217,10 +273,11 @@ final class TranscriptReader: ObservableObject {
             case "ai-title": state.setTitle(rec["aiTitle"], rank: 1); continue
             default: break
             }
-            guard type == "user" || type == "assistant" else { continue }
             if rec["isSidechain"] as? Bool == true { continue }
-            let uuid = rec["uuid"] as? String ?? UUID().uuidString
             let date = (rec["timestamp"] as? String).flatMap { iso.date(from: $0) ?? isoPlain.date(from: $0) }
+            trackBackground(rec, type: type, date: date, in: &state)
+            guard type == "user" || type == "assistant" else { continue }
+            let uuid = rec["uuid"] as? String ?? UUID().uuidString
             let meta = rec["isMeta"] as? Bool == true
             guard let msg = rec["message"] as? [String: Any] else { continue }
 
@@ -571,11 +628,11 @@ struct SessionView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                AgentAvatar(color: store.workspace(session?.workspaceId ?? "")?.color ?? .gray, status: session?.status ?? .ended)
+                AgentAvatar(color: store.workspace(session?.workspaceId ?? "")?.color ?? .gray, status: session?.shownStatus ?? .ended)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(transcript.title ?? "@\(session?.handle ?? "agent")")
                         .font(.system(size: 13.5, weight: .semibold)).lineLimit(1)
-                    Text("@\(session?.handle ?? "")  ·  \(session?.shortPath ?? "")  ·  \(session?.status.label ?? "ended")")
+                    Text("@\(session?.handle ?? "")  ·  \(session?.shortPath ?? "")  ·  \(session?.shownStatus.label ?? "ended")")
                         .font(.system(size: 11)).foregroundStyle(Theme.textFaint).lineLimit(1)
                 }
                 Spacer(minLength: 6)

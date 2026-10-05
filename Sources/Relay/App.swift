@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         startHookServer()
+        HeatMonitor.shared.start()
         store.ensureHooks()
         store.refreshAllAccounts()
 

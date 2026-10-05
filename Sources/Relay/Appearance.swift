@@ -119,11 +119,23 @@ struct AgentMark: View {
 struct StatusGlyph: View {
     var status: AgentStatus
     var size: CGFloat = 9
+    var heat: HeatLevel = .none
     @ViewState private var spin = false
 
     var body: some View {
         Group {
-            if status == .working {
+            if heat == .hot {
+                // A flickering ember: the agent heating the Mac.
+                TimelineView(.animation(minimumInterval: 1 / 20)) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                    let flicker = 0.85 + 0.15 * sin(t * 13) * sin(t * 7 + 1)
+                    Circle()
+                        .fill(RadialGradient(colors: [Fire.core, Fire.yellow, Fire.orange, Fire.red],
+                                             center: UnitPoint(x: 0.5, y: 0.7), startRadius: 0, endRadius: size * 0.6))
+                        .scaleEffect(flicker)
+                        .shadow(color: Fire.orange.opacity(0.9), radius: size * 0.5 * flicker)
+                }
+            } else if status == .working {
                 Circle()
                     .trim(from: 0, to: 0.62)
                     .stroke(Theme.blue, style: StrokeStyle(lineWidth: max(1.6, size * 0.2), lineCap: .round))
@@ -136,7 +148,7 @@ struct StatusGlyph: View {
             }
         }
         .frame(width: size, height: size)
-        .id(status == .working)   // fresh view (and animation) every time work starts again
+        .id("\(status == .working)-\(heat == .hot)")   // fresh view (and animation) every time work starts again
     }
 }
 

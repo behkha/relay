@@ -6,6 +6,7 @@ struct PillView: View {
     @ObservedObject var store: Store
     @ObservedObject var ui: UIState
     @ObservedObject private var look = Appearance.shared
+    @ObservedObject private var heat = HeatMonitor.shared
     var onInbox: () -> Void
     var onAgents: () -> Void
     var onVoice: () -> Void
@@ -39,7 +40,7 @@ struct PillView: View {
                 Circle().fill(Color.white.opacity(0.35)).frame(width: 4, height: 4)
             }
             ForEach(sessions) { s in
-                StatusGlyph(status: s.status, size: 5)
+                StatusGlyph(status: s.shownStatus, size: 5, heat: heat.heat[s.id]?.level ?? .none)
             }
         }
         .padding(.vertical, 7)
@@ -71,7 +72,7 @@ struct PillView: View {
                 Button(action: onAgents) {
                     VStack(spacing: 6) {
                         ForEach(sessions) { s in
-                            StatusGlyph(status: s.status, size: 8.5)
+                            StatusGlyph(status: s.shownStatus, size: 8.5, heat: heat.heat[s.id]?.level ?? .none)
                         }
                     }
                     .padding(.vertical, 8)
@@ -121,9 +122,10 @@ struct PillView: View {
     }
 
     private var agentsSummary: String {
-        let waiting = sessions.filter { $0.status == .waiting || $0.status == .idle }.count
-        let working = sessions.filter { $0.status == .working }.count
+        let waiting = sessions.filter { $0.shownStatus == .waiting || $0.shownStatus == .idle }.count
+        let working = sessions.filter { $0.shownStatus == .working }.count
         var parts: [String] = []
+        if let (id, h) = heat.hottest, let s = store.sessions[id] { parts.append("🔥 \(s.displayName) · \(h.cpuLabel)") }
         if working > 0 { parts.append("\(working) working") }
         if waiting > 0 { parts.append("\(waiting) waiting") }
         return parts.isEmpty ? "\(sessions.count) agents" : parts.joined(separator: " · ")

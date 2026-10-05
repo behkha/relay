@@ -36,8 +36,15 @@ enum Notifier {
         case .waiting: verb = "is waiting"
         case .finished: verb = "finished"
         }
-        content.title = "\(handle) \(verb)"
-        if let ws = workspace { content.subtitle = ws.name + (ws.email.map { " · \($0)" } ?? "") }
+        let account = workspace.map { $0.name + ($0.email.map { " · \($0)" } ?? "") }
+        if item.kind == .finished, let session {
+            // A finished turn is titled by the session's name, so you can tell which work is done.
+            content.title = session.displayName
+            content.subtitle = (["Finished · @\(handle)"] + [account].compactMap { $0 }).joined(separator: " · ")
+        } else {
+            content.title = "\(handle) \(verb)"
+            if let account { content.subtitle = account }
+        }
         content.body = item.kind == .question ? item.body : item.title
         content.userInfo = ["itemId": item.id]
         let req = UNNotificationRequest(identifier: item.id, content: content, trigger: nil)

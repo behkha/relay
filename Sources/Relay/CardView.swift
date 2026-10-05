@@ -103,7 +103,7 @@ struct CardView: View {
         let s = store.session(for: item)
         let ws = store.workspace(item.workspaceId)
         return HStack(spacing: 7) {
-            AgentMark(status: s?.status ?? .ready, size: 15)
+            AgentMark(status: s?.shownStatus ?? .ready, size: 15)
             Text([statusPhrase(item, committing: committing), s?.folderName].compactMap { $0 }.joined(separator: " · "))
                 .font(look.font(11.5))
                 .foregroundStyle(Theme.textDim)

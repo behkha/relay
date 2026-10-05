@@ -571,89 +571,304 @@ struct CopyField: View {
 
 struct AgentsPane: View {
     @ObservedObject var store: Store
+    @ObservedObject private var heat = HeatMonitor.shared
+
+    private func waiting(_ s: AgentSession) -> Int {
+        store.items.filter { $0.sessionId == s.id && $0.isActionable }.count
+    }
+
+    private var groups: [(ws: Workspace, sessions: [AgentSession])] {
+        store.workspaces.compactMap { ws in
+            let list = store.sessions.values.filter { $0.workspaceId == ws.id }
+                .sorted { ($0.startedAt, $0.id) < ($1.startedAt, $1.id) }
+            return list.isEmpty ? nil : (ws, list)
+        }
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("Agents").font(.system(size: 20, weight: .semibold)).padding(.top, 34)
+            VStack(alignment: .leading, spacing: 26) {
+                header
                 if store.sessions.isEmpty {
-                    Text("No Claude Code sessions are running in your workspaces. Start one from Workspaces, or run claude in any terminal.")
+                    emptyState
+                }
+                ForEach(groups, id: \.ws.id) { g in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Circle().fill(g.ws.color).frame(width: 7, height: 7)
+                            Text(g.ws.name.uppercased())
+                                .font(.system(size: 11, weight: .semibold)).tracking(0.8)
+                                .foregroundStyle(Theme.textDim)
+                            if let email = g.ws.email {
+                                Text(email).font(.system(size: 11.5)).foregroundStyle(Theme.textFaint)
+                            }
+                            Spacer()
+                            Text(g.sessions.count == 1 ? "1 agent" : "\(g.sessions.count) agents")
+                                .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textFaint)
+                        }
+                        .padding(.horizontal, 4)
+                        ForEach(g.sessions) { s in AgentCard(store: store, session: s, waiting: waiting(s), heat: heat.heat[s.id]) }
+                    }
+                }
+                if !store.items.isEmpty { inbox }
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(.horizontal, 28).padding(.top, 34).padding(.bottom, 28)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var header: some View {
+        let sessions = Array(store.sessions.values)
+        let working = sessions.filter { $0.shownStatus == .working }.count
+        let needsYou = sessions.filter { $0.needsYou(waiting: waiting($0)) }.count
+        let done = sessions.filter { $0.shownStatus == .done }.count
+        let clearable = sessions.filter(store.isClearable).count
+        let hot = sessions.filter { heat.heat[$0.id]?.level == .hot }.count
+        let accounts = Set(sessions.map(\.workspaceId)).count
+        return HStack(alignment: .lastTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Agents").font(.system(size: 24, weight: .bold))
+                if !sessions.isEmpty {
+                    Text("\(sessions.count) \(sessions.count == 1 ? "session" : "sessions")"
+                         + (accounts > 1 ? " across \(accounts) accounts" : ""))
                         .font(.system(size: 12.5)).foregroundStyle(Theme.textDim)
                 }
-                ForEach(store.workspaces) { ws in
-                    let list = store.sessions.values.filter { $0.workspaceId == ws.id }.sorted { $0.startedAt < $1.startedAt }
-                    if !list.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 6) {
-                                Circle().fill(ws.color).frame(width: 8, height: 8)
-                                Text(ws.name).font(.system(size: 13, weight: .semibold))
-                                Text(ws.email ?? "").font(.system(size: 11.5)).foregroundStyle(Theme.textFaint)
-                            }
-                            ForEach(list) { s in AgentCard(store: store, session: s) }
-                        }
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                if heat.macIsHot { ThermalTally(thermal: heat.thermal) }
+                if hot > 0 { Tally(count: hot, label: "hot", color: Fire.orange) }
+                if needsYou > 0 { Tally(count: needsYou, label: "need you", color: Theme.amber) }
+                if working > 0 { Tally(count: working, label: "working", color: Theme.blue) }
+                if done > 0 { Tally(count: done, label: "done", color: Theme.green) }
+                if clearable > 0 {
+                    Button { store.forgetClearableSessions(sessions) } label: {
+                        Label("Clear done & ready", systemImage: "checkmark.circle")
+                            .font(.system(size: 11, weight: .medium))
                     }
-                }
-                if !store.items.isEmpty {
-                    Text("Inbox").font(.system(size: 13, weight: .semibold)).padding(.top, 8)
-                    ForEach(store.items) { item in
-                        HStack {
-                            Circle().fill(item.isActionable ? Theme.amber : Theme.green).frame(width: 7, height: 7)
-                            Text("@\(store.session(for: item)?.handle ?? "?")").font(.system(size: 12, weight: .medium))
-                            Text(item.title).font(.system(size: 12)).foregroundStyle(Theme.textDim).lineLimit(1)
-                            Spacer()
-                            Text(item.createdAt, style: .relative).font(.system(size: 11)).foregroundStyle(Theme.textFaint)
-                            Button("Dismiss") { store.dismiss(item) }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Theme.textDim)
-                        }
-                        .padding(9)
-                        .background(RoundedRectangle(cornerRadius: 9).fill(Theme.row))
-                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.textDim)
+                    .help("Remove done and ready agents from the list; each returns when it does something again")
                 }
             }
-            .padding(.horizontal, 28).padding(.bottom, 28)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle().fill(Theme.claude.opacity(0.12)).frame(width: 52, height: 52)
+                Image(systemName: "staroflife.fill").font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.claude)
+            }
+            Text("No agents running").font(.system(size: 14, weight: .semibold))
+            Text("Start one from Workspaces, or run claude in any terminal.")
+                .font(.system(size: 12.5)).foregroundStyle(Theme.textDim)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 48)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.025)))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.07), style: StrokeStyle(lineWidth: 1, dash: [4, 4])))
+    }
+
+    private var inbox: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "tray.fill").font(.system(size: 10)).foregroundStyle(Theme.textFaint)
+                Text("INBOX").font(.system(size: 11, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.textDim)
+                Spacer()
+                Text("\(store.items.count)").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textFaint)
+            }
+            .padding(.horizontal, 4)
+            VStack(spacing: 0) {
+                ForEach(Array(store.items.enumerated()), id: \.element.id) { i, item in
+                    if i > 0 { Rectangle().fill(Color.white.opacity(0.05)).frame(height: 0.5).padding(.leading, 34) }
+                    InboxRow(item: item, session: store.session(for: item)) { store.dismiss(item) }
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.white.opacity(0.03)))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.06), lineWidth: 0.75))
+        }
+    }
+}
+
+private struct InboxRow: View {
+    var item: InboxItem
+    var session: AgentSession?
+    var onDismiss: () -> Void
+    @ViewState private var hover = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: item.isActionable ? "exclamationmark.bubble.fill" : "checkmark.circle.fill")
+                .font(.system(size: 12)).foregroundStyle(item.isActionable ? Theme.amber : Theme.green)
+                .frame(width: 16)
+            Text(session?.displayName ?? "Agent").font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
+                .layoutPriority(1)
+            Text(item.title).font(.system(size: 12.5)).foregroundStyle(Theme.textDim).lineLimit(1)
+            Spacer(minLength: 8)
+            if hover {
+                IconButton(systemName: "xmark", size: 9.5, action: onDismiss).help("Dismiss")
+            } else {
+                TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                    Text(shortAgo(item.createdAt, now: ctx.date))
+                        .font(.system(size: 11, weight: .medium).monospacedDigit()).foregroundStyle(Theme.textFaint)
+                }
+                .frame(height: 22)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Color.white.opacity(hover ? 0.035 : 0))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
     }
 }
 
 struct AgentCard: View {
     @ObservedObject var store: Store
     var session: AgentSession
+    var waiting: Int
+    var heat: SessionHeat?
     @ViewState private var message = ""
+    @ViewState private var hover = false
+    @FocusState private var composing: Bool
+
+    private var needsYou: Bool { session.needsYou(waiting: waiting) }
+    private var canSend: Bool { !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var heatLevel: HeatLevel { heat?.level ?? .none }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                StatusRing(status: session.status, workspaceColor: nil)
-                Text("@\(session.handle)").font(.system(size: 13, weight: .semibold))
-                Text(session.shortPath).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.textFaint)
-                Text("· \(session.status.label)").font(.system(size: 11.5)).foregroundStyle(Theme.textFaint)
-                Spacer()
-                Text(session.terminal.kindLabel).font(.system(size: 10.5)).foregroundStyle(Theme.textFaint)
-                Button("View") { NotificationCenter.default.post(name: .relayViewSession, object: session.id) }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                AgentOrb(status: session.shownStatus, attention: needsYou, size: 36, heat: heatLevel)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(session.displayName).font(.system(size: 14.5, weight: .semibold)).lineLimit(1)
+                            .help(session.displayName)
+                        Text("@\(session.handle)").font(.system(size: 11.5)).foregroundStyle(Theme.textFaint).lineLimit(1)
+                        if let heat, heat.level > .none { HeatBadge(heat: heat, fontSize: 10.5) }
+                    }
+                    HStack(spacing: 6) {
+                        Text(session.statusText(waiting: waiting))
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(waiting > 0 ? Theme.amber : session.shownStatus.color)
+                        dot
+                        Label(session.shortPath, systemImage: "folder")
+                            .labelStyle(MetaLabelStyle())
+                        dot
+                        Label(session.terminal.kindLabel, systemImage: session.terminal.isAppHosted ? "macwindow" : "terminal")
+                            .labelStyle(MetaLabelStyle())
+                        dot
+                        TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                            Text(shortAgo(session.updatedAt, now: ctx.date))
+                                .font(.system(size: 11.5).monospacedDigit()).foregroundStyle(Theme.textFaint)
+                        }
+                    }
+                    .lineLimit(1)
+                }
+                Spacer(minLength: 12)
+                HStack(spacing: 6) {
+                    Button { store.focusTerminal(sessionId: session.id) } label: {
+                        Label("Terminal", systemImage: session.terminal.isAppHosted ? "macwindow" : "terminal")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    Button { NotificationCenter.default.post(name: .relayViewSession, object: session.id) } label: {
+                        Label("Open", systemImage: "arrow.up.right")
+                    }
                     .buttonStyle(PrimaryButtonStyle())
-                Button("Terminal") { store.focusTerminal(sessionId: session.id) }.buttonStyle(SecondaryButtonStyle())
+                }
+                .labelStyle(CompactLabelStyle())
             }
-            if let p = session.lastPrompt, !p.isEmpty {
-                Text("› \(p)").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.textDim).lineLimit(2)
+
+            if let prompt = session.promptPreview {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: session.promptIsTaskReport ? "gearshape.fill" : "person.fill")
+                        .font(.system(size: 9.5)).foregroundStyle(session.promptIsTaskReport ? Theme.textFaint : Theme.blue)
+                    Text(prompt).font(.system(size: 12.5)).foregroundStyle(Color.white.opacity(0.82)).lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(session.promptIsTaskReport ? Color.white.opacity(0.04) : Theme.blue.opacity(0.1)))
             }
-            if let m = session.lastMessage, !m.isEmpty {
-                Text(m).font(.system(size: 11.5)).foregroundStyle(Theme.textDim).lineLimit(3)
+
+            if let m = session.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "staroflife.fill").font(.system(size: 9.5)).foregroundStyle(Theme.claude)
+                    Text(m).font(.system(size: 12.5)).foregroundStyle(Theme.textDim).lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 12)
             }
-            HStack {
-                TextField("Message @\(session.handle)…", text: $message, onCommit: send).textFieldStyle(.roundedBorder)
-                Button("Send", action: send).disabled(message.trimmingCharacters(in: .whitespaces).isEmpty)
+
+            HStack(spacing: 8) {
+                TextField("Message \(session.displayName)…", text: $message)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12.5))
+                    .focused($composing)
+                    .onSubmit(send)
+                Button(action: send) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(canSend ? Color.black : Theme.textFaint)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(canSend ? Color.white : Color.white.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .help("Send")
             }
+            .padding(.leading, 14).padding(.trailing, 5).padding(.vertical, 5)
+            .background(Capsule().fill(Color.black.opacity(0.25)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(composing ? 0.2 : 0.08), lineWidth: 0.75))
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 11).fill(Color.white.opacity(0.035)))
-        .overlay(RoundedRectangle(cornerRadius: 11).stroke(Theme.rowBorder, lineWidth: 1))
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(needsYou ? Theme.amber.opacity(0.06) : Color.white.opacity(hover ? 0.05 : 0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(needsYou ? Theme.amber.opacity(0.28) : Color.white.opacity(hover ? 0.11 : 0.07), lineWidth: 0.75)
+                .opacity(heatLevel > .none ? 0 : 1)
+        )
+        .overlay {
+            if heatLevel > .none { FireBorder(cornerRadius: 16, level: heatLevel) }
+        }
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
+    }
+
+    private var dot: some View {
+        Text("·").font(.system(size: 11.5)).foregroundStyle(Theme.textFaint)
     }
 
     private func send() {
         let t = message
-        guard !t.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         message = ""
         store.sendText(t, toSession: session.id)
+    }
+}
+
+/// Small icon + text in the faint meta color ("folder relay").
+private struct MetaLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.icon.font(.system(size: 9.5))
+            configuration.title.font(.system(size: 11.5))
+        }
+        .foregroundStyle(Theme.textDim)
+    }
+}
+
+/// Icon + title with a tight gap, for buttons.
+private struct CompactLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 5) {
+            configuration.icon.font(.system(size: 10, weight: .semibold))
+            configuration.title
+        }
     }
 }
 

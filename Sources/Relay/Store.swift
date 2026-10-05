@@ -356,6 +356,7 @@ final class Store: ObservableObject {
         case "SessionStart":
             if s.status == .ended { s.status = .ready }
             s.title = nil   // a resumed or cleared session may get a new title
+            s.backgroundTasks = nil
 
         case "UserPromptSubmit":
             s.status = .working
@@ -418,14 +419,9 @@ final class Store: ObservableObject {
                 ?? Transcript.lastAssistantText(path: s.transcriptPath) ?? ""
             s.lastMessage = msg
             items.removeAll { $0.sessionId == sessionId && ($0.kind == .finished || $0.kind == .waiting) }
-            // Claude Code may have renamed the session this turn; pick up the newest title.
-            let path = s.transcriptPath
-            accountQueue.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                guard let t = TranscriptReader.summary(path: path).title, !t.isEmpty else { return }
-                DispatchQueue.main.async {
-                    if var cur = self?.sessions[sessionId], cur.title != t { cur.title = t; self?.sessions[sessionId] = cur }
-                }
-            }
+            // Claude Code may have renamed the session this turn; pick up the newest title,
+            // and count the background tasks it left running.
+            refreshFromTranscript(sessionId, after: 1.5)
             insert(InboxItem(sessionId: sessionId, workspaceId: wsId, kind: .finished,
                              title: Self.title(fromMessage: s.lastPrompt ?? "", fallback: msg), body: msg))
 
@@ -505,19 +501,29 @@ final class Store: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "nextStepsEnabled") }
     }
 
-    /// Loads Claude Code's session titles for agents that don't have one yet.
-    func refreshTitles() {
-        let missing = sessions.values.filter { ($0.title ?? "").isEmpty && $0.transcriptPath != nil }
-        for s in missing {
-            let path = s.transcriptPath
-            let id = s.id
-            accountQueue.async {
-                guard let t = TranscriptReader.summary(path: path).title, !t.isEmpty else { return }
-                DispatchQueue.main.async {
-                    if var cur = self.sessions[id] { cur.title = t; self.sessions[id] = cur }
-                }
+    /// Re-reads a session's title and running background tasks from its transcript.
+    func refreshFromTranscript(_ sessionId: String, after delay: TimeInterval = 0) {
+        guard let s = sessions[sessionId] else { return }
+        let path = s.transcriptPath
+        let since = s.pidStart.map { Date(timeIntervalSince1970: $0) }
+        accountQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            let summary = TranscriptReader.summary(path: path, since: since)
+            DispatchQueue.main.async {
+                guard var cur = self?.sessions[sessionId] else { return }
+                if let t = summary.title, !t.isEmpty { cur.title = t }
+                cur.backgroundTasks = summary.backgroundTasks
+                if cur != self?.sessions[sessionId] { self?.sessions[sessionId] = cur }
             }
         }
+    }
+
+    /// Loads session titles for agents that don't have one yet, and re-counts background tasks
+    /// for agents between turns (a task may have finished since).
+    func refreshTitles() {
+        let stale = sessions.values.filter {
+            $0.transcriptPath != nil && (($0.title ?? "").isEmpty || $0.status != .working)
+        }
+        for s in stale { refreshFromTranscript(s.id) }
     }
 
     /// Fills in the session title, the instruction and a one-line activity summary for a card.
@@ -876,6 +882,16 @@ final class Store: ObservableObject {
         }
         items.removeAll { $0.sessionId == id }
         sessions.removeValue(forKey: id)
+    }
+
+    /// Done or ready, with nothing waiting on you: safe to drop from the list.
+    func isClearable(_ s: AgentSession) -> Bool {
+        (s.shownStatus == .done || s.shownStatus == .ready) && !hasActionable(s.id)
+    }
+
+    /// Hides every listed done or ready agent (each comes back the next time it does something).
+    func forgetClearableSessions(_ list: [AgentSession]) {
+        for s in list where isClearable(s) { forgetSession(s.id) }
     }
 
     func dismiss(_ item: InboxItem) {

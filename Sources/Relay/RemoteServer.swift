@@ -165,8 +165,8 @@ final class RemoteServer: ObservableObject {
     private func snapshot() -> [String: Any] {
         let workspaces = store.workspaces.map { ["id": $0.id, "name": $0.name, "color": $0.colorHex, "email": $0.email ?? ""] }
         let sessions = store.sessions.values.sorted { $0.startedAt < $1.startedAt }.map { s -> [String: Any] in
-            ["id": s.id, "handle": s.handle, "path": s.shortPath, "status": s.status.rawValue,
-             "statusLabel": s.status.label, "workspaceId": s.workspaceId,
+            ["id": s.id, "handle": s.handle, "path": s.shortPath, "status": s.shownStatus.rawValue,
+             "statusLabel": s.shownStatus.label, "workspaceId": s.workspaceId,
              "lastPrompt": s.lastPrompt ?? "", "lastMessage": String((s.lastMessage ?? "").prefix(2000))]
         }
         // Oldest first: new cards are appended, so nothing moves under a finger mid-tap.

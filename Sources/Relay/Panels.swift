@@ -7,6 +7,7 @@ import AppKit
 struct AgentsListView: View {
     @ObservedObject var store: Store
     @ObservedObject private var look = Appearance.shared
+    @ObservedObject private var heat = HeatMonitor.shared
     var onOpen: (String) -> Void
     var onTalk: (String) -> Void
 
@@ -56,6 +57,7 @@ struct AgentsListView: View {
                                 ForEach(g.sessions) { s in
                                     AgentRow(session: s,
                                              waiting: waiting(s),
+                                             heat: heat.heat[s.id],
                                              showFolder: byAccount,
                                              onOpen: { onOpen(s.id) },
                                              onTalk: { onTalk(s.id) },
@@ -79,8 +81,10 @@ struct AgentsListView: View {
 
     private var header: some View {
         let sessions = store.visibleSessions
-        let working = sessions.filter { $0.status == .working }.count
-        let needsYou = sessions.filter { $0.status == .waiting || $0.status == .idle || waiting($0) > 0 }.count
+        let working = sessions.filter { $0.shownStatus == .working }.count
+        let needsYou = sessions.filter { $0.shownStatus == .waiting || $0.shownStatus == .idle || waiting($0) > 0 }.count
+        let hot = sessions.filter { heat.heat[$0.id]?.level == .hot }.count
+        let clearable = sessions.filter(store.isClearable).count
         return HStack(spacing: 8) {
             Text("Agents").font(look.font(14, .semibold)).foregroundStyle(.white)
             if !sessions.isEmpty {
@@ -89,8 +93,11 @@ struct AgentsListView: View {
                     .foregroundStyle(Theme.textDim)
             }
             Spacer(minLength: 8)
+            if heat.macIsHot { ThermalTally(thermal: heat.thermal) }
+            if hot > 0 { Tally(count: hot, label: "hot", color: Fire.orange) }
             if needsYou > 0 { Tally(count: needsYou, label: "need you", color: Theme.amber) }
             if working > 0 { Tally(count: working, label: "working", color: Theme.blue) }
+            if clearable > 0 { ClearButton(count: clearable) { store.forgetClearableSessions(sessions) } }
         }
         .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 11)
     }
@@ -129,8 +136,32 @@ struct AgentsListView: View {
     }
 }
 
-/// "3 working" with a colored dot, used in the agents list header.
-private struct Tally: View {
+/// "Clear 5": hides every done or ready agent in one click.
+private struct ClearButton: View {
+    var count: Int
+    var action: () -> Void
+    @ObservedObject private var look = Appearance.shared
+    @ViewState private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark").font(look.font(8, .bold))
+                Text("Clear \(count)").font(look.font(10, .medium).monospacedDigit())
+            }
+            .foregroundStyle(Theme.green)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(Theme.green.opacity(hover ? 0.24 : 0.12)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help("Remove done and ready agents from the list; each returns when it does something again")
+    }
+}
+
+/// "3 working" with a colored dot, used in agents list headers.
+struct Tally: View {
     var count: Int
     var label: String
     var color: Color
@@ -150,6 +181,7 @@ private struct Tally: View {
 private struct AgentRow: View {
     let session: AgentSession
     let waiting: Int
+    let heat: SessionHeat?
     /// Show the project folder (rows are grouped by account rather than by folder).
     let showFolder: Bool
     var onOpen: () -> Void
@@ -159,21 +191,9 @@ private struct AgentRow: View {
     @ObservedObject private var look = Appearance.shared
 
     private var hasTitle: Bool { session.title?.isEmpty == false }
-    private var needsYou: Bool { waiting > 0 || session.status == .waiting || session.status == .idle }
-
-    private var statusText: String {
-        if waiting > 0 { return waiting == 1 ? "Needs you" : "\(waiting) waiting" }
-        switch session.status {
-        case .working: return "Working"
-        case .waiting: return "Asking"
-        case .idle: return "Your turn"
-        case .done: return "Done"
-        case .ready: return "Ready"
-        case .ended: return "Ended"
-        }
-    }
-
-    private var statusColor: Color { waiting > 0 ? Theme.amber : session.status.color }
+    private var needsYou: Bool { session.needsYou(waiting: waiting) }
+    private var statusText: String { session.statusText(waiting: waiting) }
+    private var statusColor: Color { waiting > 0 ? Theme.amber : session.shownStatus.color }
 
     /// Folder (when it isn't the name already) and where the agent runs.
     private var meta: String {
@@ -184,15 +204,12 @@ private struct AgentRow: View {
         return parts.joined(separator: " · ")
     }
 
-    private var prompt: String? {
-        guard let p = session.lastPrompt else { return nil }
-        let line = p.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
-        return line.isEmpty ? nil : line
-    }
+    private var prompt: String? { session.promptPreview }
+    private var heatLevel: HeatLevel { heat?.level ?? .none }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            AgentOrb(status: session.status, attention: needsYou)
+            AgentOrb(status: session.shownStatus, attention: needsYou, heat: heatLevel)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(session.displayName)
@@ -200,7 +217,7 @@ private struct AgentRow: View {
                         .help(session.displayName)
                     Spacer(minLength: 4)
                     TimelineView(.periodic(from: .now, by: 30)) { ctx in
-                        Text(Self.ago(session.updatedAt, now: ctx.date))
+                        Text(shortAgo(session.updatedAt, now: ctx.date))
                             .font(look.font(10, .medium).monospacedDigit()).foregroundStyle(Theme.textFaint)
                     }
                     .opacity(hover ? 0 : 1)
@@ -210,9 +227,12 @@ private struct AgentRow: View {
                     Text("·").font(look.font(10.5)).foregroundStyle(Theme.textFaint)
                     Text(meta).font(look.font(10.5)).foregroundStyle(Theme.textDim).lineLimit(1).truncationMode(.middle)
                 }
+                if let heat, heat.level > .none {
+                    HeatBadge(heat: heat, fontSize: 9.5).padding(.top, 1)
+                }
                 if let prompt {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Image(systemName: "arrow.turn.down.right").font(look.font(8.5, .semibold))
+                        Image(systemName: session.promptIsTaskReport ? "gearshape" : "arrow.turn.down.right").font(look.font(8.5, .semibold))
                         Text(prompt).font(look.font(10.5)).lineLimit(1)
                     }
                     .foregroundStyle(Theme.textFaint)
@@ -229,7 +249,11 @@ private struct AgentRow: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(needsYou ? Theme.amber.opacity(0.28) : Color.white.opacity(hover ? 0.12 : 0.06), lineWidth: 0.75)
+                .opacity(heatLevel > .none ? 0 : 1)
         )
+        .overlay {
+            if heatLevel > .none { FireBorder(cornerRadius: 12, level: heatLevel) }
+        }
         .overlay(alignment: .topTrailing) {
             if hover {
                 HStack(spacing: 0) {
@@ -245,30 +269,76 @@ private struct AgentRow: View {
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
     }
 
-    static func ago(_ date: Date, now: Date) -> String {
-        let s = max(0, Int(now.timeIntervalSince(date)))
-        if s < 60 { return "now" }
-        if s < 3600 { return "\(s / 60)m" }
-        if s < 86400 { return "\(s / 3600)h" }
-        return "\(s / 86400)d"
+}
+
+/// "now", "4m", "2h", "3d".
+func shortAgo(_ date: Date, now: Date) -> String {
+    let s = max(0, Int(now.timeIntervalSince(date)))
+    if s < 60 { return "now" }
+    if s < 3600 { return "\(s / 60)m" }
+    if s < 86400 { return "\(s / 3600)h" }
+    return "\(s / 86400)d"
+}
+
+extension AgentSession {
+    /// Waiting on you: a question or permission prompt, or idle at its prompt with nothing in the background.
+    func needsYou(waiting: Int) -> Bool {
+        waiting > 0 || shownStatus == .waiting || shownStatus == .idle
+    }
+
+    func statusText(waiting: Int) -> String {
+        if waiting > 0 { return waiting == 1 ? "Needs you" : "\(waiting) waiting" }
+        let bg = backgroundTasks ?? 0
+        if bg > 0 && status != .working && shownStatus == .working {
+            return bg == 1 ? "1 background task" : "\(bg) background tasks"
+        }
+        switch shownStatus {
+        case .working: return "Working"
+        case .waiting: return "Asking"
+        case .idle: return "Your turn"
+        case .done: return "Done"
+        case .ready: return "Ready"
+        case .ended: return "Ended"
+        }
     }
 }
 
 /// The agent's avatar in the list: the Claude spark in a soft disc, ringed by its status
 /// (a spinning arc while it works).
-private struct AgentOrb: View {
+struct AgentOrb: View {
     var status: AgentStatus
     var attention: Bool
     var size: CGFloat = 30
+    var heat: HeatLevel = .none
     @ViewState private var spin = false
 
     var body: some View {
         ZStack {
-            Circle().fill(Theme.claude.opacity(0.13))
-            Image(systemName: "staroflife.fill")
-                .font(.system(size: size * 0.4, weight: .bold))
-                .foregroundStyle(Theme.claude)
-            if status == .working {
+            if heat > .none {
+                // A glowing coal: opaque, so the flames behind it read as rising off its rim.
+                Circle().fill(RadialGradient(colors: [heat == .hot ? Fire.ember : Fire.ember.opacity(0.45), Fire.coal],
+                                             center: UnitPoint(x: 0.5, y: 0.65), startRadius: 0, endRadius: size * 0.55))
+            } else {
+                Circle().fill(Theme.claude.opacity(0.13))
+            }
+            if heat == .hot {
+                Image(systemName: "staroflife.fill")
+                    .font(.system(size: size * 0.4, weight: .bold))
+                    .foregroundStyle(Fire.gradient)
+                    .shadow(color: Fire.yellow.opacity(0.7), radius: 3)
+            } else {
+                Image(systemName: "staroflife.fill")
+                    .font(.system(size: size * 0.4, weight: .bold))
+                    .foregroundStyle(Theme.claude)
+            }
+            if heat == .hot {
+                Circle()
+                    .strokeBorder(Fire.ring, lineWidth: 2)
+                    .rotationEffect(.degrees(spin ? 360 : 0))
+                    .onAppear {
+                        withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) { spin = true }
+                    }
+            } else if status == .working {
                 Circle().strokeBorder(Theme.blue.opacity(0.18), lineWidth: 1.5)
                 Circle()
                     .trim(from: 0, to: 0.3)
@@ -282,8 +352,12 @@ private struct AgentOrb: View {
             }
         }
         .frame(width: size, height: size)
-        .shadow(color: attention ? Theme.amber.opacity(0.45) : .clear, radius: 6)
-        .id(status == .working)   // fresh view (and animation) every time work starts again
+        // Behind, not in the ZStack: the aura is larger than the orb and would stretch its circles.
+        .background {
+            if heat > .none { FlameAura(size: size, intensity: heat == .hot ? 1 : 0.5) }
+        }
+        .shadow(color: attention ? Theme.amber.opacity(0.45) : heat == .hot ? Fire.orange.opacity(0.6) : .clear, radius: 6)
+        .id("\(status == .working)-\(heat.rawValue)")   // fresh view (and animation) every time work starts again
     }
 }
 

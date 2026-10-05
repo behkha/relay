@@ -133,11 +133,35 @@ struct AgentSession: Codable, Identifiable, Hashable {
     var handle: String
     /// Claude Code's AI-generated session title, when it has one.
     var title: String?
+    /// Background tasks (shell commands, agents, workflows) the agent left running after its turn.
+    var backgroundTasks: Int?
+
+    /// The status to show: an agent whose turn ended but whose background tasks still run is still working.
+    var shownStatus: AgentStatus {
+        if (backgroundTasks ?? 0) > 0, status == .done || status == .ready || status == .idle { return .working }
+        return status
+    }
 
     /// What the UI calls this agent: its session title, else its project folder.
     var displayName: String { (title?.isEmpty == false ? title! : folderName) }
 
     var folderName: String { (cwd as NSString).lastPathComponent }
+
+    /// The last instruction on one line; a background task's report reads as its summary.
+    var promptPreview: String? {
+        guard var p = lastPrompt?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty else { return nil }
+        if p.hasPrefix("<task-notification>") {
+            guard let a = p.range(of: "<summary>"), let b = p.range(of: "</summary>", range: a.upperBound..<p.endIndex) else {
+                return "Background task finished"
+            }
+            p = String(p[a.upperBound..<b.lowerBound])
+        }
+        let line = p.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return line.isEmpty ? nil : line
+    }
+
+    /// True when the last instruction was a background task reporting back rather than you.
+    var promptIsTaskReport: Bool { lastPrompt?.hasPrefix("<task-notification>") == true }
 
     /// "~/one/web" style path for display.
     var shortPath: String {

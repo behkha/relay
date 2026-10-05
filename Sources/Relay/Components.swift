@@ -119,11 +119,11 @@ struct SessionRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                StatusRing(status: session.status, workspaceColor: nil)
+                StatusRing(status: session.shownStatus, workspaceColor: nil)
                     .scaleEffect(0.8)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("@\(session.handle)").font(.system(size: 12, weight: .medium)).foregroundStyle(.white)
-                    Text("\(session.shortPath) · \(session.status.label)")
+                    Text("\(session.shortPath) · \(session.shownStatus.label)")
                         .font(.system(size: 10.5)).foregroundStyle(Theme.textFaint).lineLimit(1)
                 }
                 Spacer()
