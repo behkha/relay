@@ -7,6 +7,11 @@ import Carbon.HIToolbox
 @main
 enum RelayMain {
     static func main() {
+        // scripts/selftest.sh: run the built-in checks and exit before anything starts
+        // (no NSApplication, listeners, hooks or UI), so it never collides with a running Relay.
+        if CommandLine.arguments.contains("--self-test") {
+            exit(SelfTest.runAll() ? 0 : 1)
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
