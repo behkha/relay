@@ -9,6 +9,8 @@ struct HTTPRequest {
     var headers: [String: String]   // lowercased keys
     var body: Data
     var remoteHost: String?
+    /// The request target exactly as sent ("/api/session?id=…"); what a device signs.
+    var target: String = ""
 
     func header(_ name: String) -> String? { headers[name.lowercased()] }
 }
@@ -219,7 +221,8 @@ final class HTTPServer {
             for item in comps.queryItems ?? [] { query[item.name] = item.value ?? "" }
         }
         return .request(HTTPRequest(method: String(requestLine[0]), path: path, query: query,
-                                    headers: headers, body: Data(body), remoteHost: remote.flatMap(host(of:))))
+                                    headers: headers, body: Data(body), remoteHost: remote.flatMap(host(of:)),
+                                    target: target))
     }
 
     private static func reason(_ code: Int) -> String {

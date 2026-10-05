@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Security
 
 enum Paths {
     static let support: URL = {
@@ -15,6 +16,10 @@ enum Paths {
     static var serverConfig: URL { support.appendingPathComponent("server.json") }
     static var workspaces: URL { support.appendingPathComponent("workspaces.json") }
     static var sessions: URL { support.appendingPathComponent("sessions.json") }
+    /// Phones paired over Tailscale (public keys, push subscriptions). Mode 0600.
+    static var devices: URL { support.appendingPathComponent("devices.json") }
+    /// Relay's Web Push (VAPID) signing key. Mode 0600.
+    static var vapid: URL { support.appendingPathComponent("vapid.json") }
     static var hookScript: URL { support.appendingPathComponent("bin/relay-hook") }
     static var screenshots: URL {
         let d = support.appendingPathComponent("screenshots", isDirectory: true)
@@ -183,6 +188,71 @@ enum ClaudeCLI {
                           email: obj["email"] as? String,
                           plan: obj["subscriptionType"] as? String)
     }
+}
+
+enum Secure {
+    /// Cryptographically random bytes.
+    static func randomBytes(_ count: Int) -> Data {
+        var bytes = [UInt8](repeating: 0, count: count)
+        if SecRandomCopyBytes(kSecRandomDefault, count, &bytes) != errSecSuccess {
+            var rng = SystemRandomNumberGenerator()   // also a CSPRNG on Apple platforms
+            bytes = (0..<count).map { _ in UInt8.random(in: .min ... .max, using: &rng) }
+        }
+        return Data(bytes)
+    }
+
+    /// Compares secrets in time that depends only on their length.
+    static func equal(_ a: Data, _ b: Data) -> Bool {
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for (x, y) in zip(a, b) { diff |= x ^ y }
+        return diff == 0
+    }
+
+    /// Writes a file that is never readable by anyone else, not even for a moment: a temp file is
+    /// created 0600 next to the target, synced, then renamed over it (an atomic replace).
+    static func write(_ data: Data, to url: URL) throws {
+        let dir = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
+        let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        var written = 0
+        data.withUnsafeBytes { buf in
+            while written < buf.count, let base = buf.baseAddress {
+                let n = Darwin.write(fd, base + written, buf.count - written)
+                if n <= 0 { break }
+                written += n
+            }
+        }
+        let synced = fsync(fd) == 0
+        close(fd)
+        guard written == data.count, synced, rename(tmp.path, url.path) == 0 else {
+            unlink(tmp.path)
+            throw POSIXError(.EIO)
+        }
+        chmod(url.path, 0o600)
+    }
+}
+
+extension Data {
+    /// Base64url without padding (RFC 4648 §5), as used by WebCrypto, JWTs and Web Push.
+    func base64URLEncodedString() -> String {
+        base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// Decodes base64url, with or without padding. Nil for anything outside the base64url alphabet.
+    init?(base64URL s: String) {
+        guard !s.isEmpty, s.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "=") })
+        else { return nil }
+        var t = s.replacingOccurrences(of: "=", with: "").replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        if t.count % 4 == 1 { return nil }
+        t += String(repeating: "=", count: (4 - t.count % 4) % 4)
+        self.init(base64Encoded: t)
+    }
+
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
 }
 
 enum AppleScript {

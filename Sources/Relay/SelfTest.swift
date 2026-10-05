@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Checks run by `Relay --self-test` (scripts/selftest.sh). Package.swift has no test target and XCTest
 /// isn't guaranteed with only the Command Line Tools, so the app carries its own small harness.
@@ -21,6 +22,7 @@ enum SelfTest {
         defer { try? FileManager.default.removeItem(at: sandbox) }
         harness()
         remoteAPI()
+        devices()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -88,5 +90,165 @@ enum SelfTest {
               snap["caps"] as? [String] == ["read", "answer"] && sess["cpu"] as? Int == 312
               && sess["heat"] as? String == "hot" && sess["updatedAt"] as? Double == 1_700_000_000_000)
         check("api: snapshot is valid JSON", JSONSerialization.isValidJSONObject(snap))
+    }
+
+    // MARK: - Devices
+
+    /// A request signed the way the phone page signs it.
+    private static func signedRequest(_ method: String, _ target: String, body: String = "", ts: Date,
+                                      key: P256.Signing.PrivateKey, device: String,
+                                      login: String? = "ada@example.com") -> HTTPRequest {
+        let tsText = String(Int64(ts.timeIntervalSince1970 * 1000))
+        let bodyData = Data(body.utf8)
+        let message = DeviceStore.signedMessage(method: method, target: target, ts: tsText, body: bodyData)
+        let sig = (try? key.signature(for: Data(message.utf8)).rawRepresentation) ?? Data()
+        var headers = ["x-relay-device": device, "x-relay-ts": tsText, "x-relay-sig": sig.base64URLEncodedString()]
+        if let login { headers["tailscale-user-login"] = login }
+        let path = String(target.split(separator: "?", maxSplits: 1).first ?? "")
+        return HTTPRequest(method: method, path: path, query: [:], headers: headers, body: bodyData,
+                           remoteHost: "127.0.0.1", target: target)
+    }
+
+    /// n − s on P-256: the other valid signature for the same message (ECDSA malleability).
+    private static func malleated(_ raw: Data) -> Data {
+        let n: [UInt8] = [0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                          0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51]
+        let s = [UInt8](raw.suffix(32))
+        var out = [UInt8](repeating: 0, count: 32)
+        var borrow = 0
+        for i in stride(from: 31, through: 0, by: -1) {
+            var d = Int(n[i]) - Int(s[i]) - borrow
+            borrow = d < 0 ? 1 : 0
+            if d < 0 { d += 256 }
+            out[i] = UInt8(d)
+        }
+        return raw.prefix(32) + Data(out)
+    }
+
+    private static func devices() {
+        let now = Date(timeIntervalSince1970: 1_759_660_000)
+        let file = Paths.support.appendingPathComponent("devices-test.json")
+        let store = DeviceStore(file: file)
+        let key = P256.Signing.PrivateKey()
+        let pub = key.publicKey.x963Representation.base64URLEncodedString()
+        guard let phone = store.addDevice(name: "Ada's iPhone\u{7}", publicKey: pub, login: "ada@example.com", now: now) else {
+            check("devices: pairing stores the device", false); return
+        }
+        check("devices: pairing stores the device", store.active.count == 1 && store.ownerLogin == "ada@example.com"
+              && phone.name == "Ada's iPhone" && phone.id.count == 22)
+
+        func outcome(_ r: HTTPRequest, at t: Date = now) -> Result<Device, DeviceStore.Rejection> { store.check(r, now: t) }
+        func rejected(_ r: HTTPRequest, _ why: DeviceStore.Rejection, at t: Date = now) -> Bool {
+            if case .failure(let e) = outcome(r, at: t) { return e == why }
+            return false
+        }
+
+        let ok = signedRequest("GET", "/api/state", ts: now, key: key, device: phone.id)
+        check("devices: a valid signature is accepted", (try? outcome(ok).get())?.id == phone.id)
+        check("devices: the same request again is a replay", rejected(ok, .replayed))
+
+        var tampered = signedRequest("POST", "/api/answer", body: #"{"action":"dismiss"}"#, ts: now, key: key, device: phone.id)
+        tampered.body = Data(#"{"action":"dismisx"}"#.utf8)
+        check("devices: a tampered body is rejected", rejected(tampered, .badSignature))
+        var moved = signedRequest("GET", "/api/session?id=a", ts: now, key: key, device: phone.id)
+        moved.target = "/api/session?id=b"
+        check("devices: a tampered path or query is rejected", rejected(moved, .badSignature))
+        var otherMethod = signedRequest("GET", "/api/kill", ts: now, key: key, device: phone.id)
+        otherMethod.method = "POST"
+        check("devices: a tampered method is rejected", rejected(otherMethod, .badSignature))
+
+        for (offset, accepted) in [(-61.0, false), (61, false), (-60, true), (59, true)] {
+            let r = signedRequest("GET", "/api/state?n=\(offset)", ts: now.addingTimeInterval(offset), key: key, device: phone.id)
+            let result = outcome(r)
+            let pass: Bool
+            if accepted { pass = (try? result.get()) != nil } else { pass = rejected(r, .staleTimestamp) }
+            check("devices: timestamp \(offset > 0 ? "+" : "")\(Int(offset)) s is \(accepted ? "accepted" : "rejected")", pass)
+        }
+        var badTs = signedRequest("GET", "/api/state", ts: now, key: key, device: phone.id)
+        badTs.headers["x-relay-ts"] = "-1759660000000"
+        check("devices: a malformed timestamp is rejected", rejected(badTs, .badTimestamp))
+
+        // A captured request can't be replayed by rewriting its signature (s → n − s).
+        let fresh = signedRequest("GET", "/api/state?m=1", ts: now, key: key, device: phone.id)
+        _ = outcome(fresh)
+        var twin = fresh
+        let raw = Data(base64URL: fresh.headers["x-relay-sig"] ?? "") ?? Data()
+        twin.headers["x-relay-sig"] = malleated(raw).base64URLEncodedString()
+        // CryptoKit accepts the rewritten signature, so it's the replay cache that has to catch it.
+        check("devices: a malleated signature can't replay a request", rejected(twin, .replayed))
+
+        var short = signedRequest("GET", "/api/state?s=1", ts: now, key: key, device: phone.id)
+        short.headers["x-relay-sig"] = Data(repeating: 1, count: 63).base64URLEncodedString()
+        check("devices: a signature of the wrong length is rejected", rejected(short, .badSignature))
+        let impostor = signedRequest("GET", "/api/state?i=1", ts: now, key: P256.Signing.PrivateKey(), device: phone.id)
+        check("devices: another key's signature is rejected", rejected(impostor, .badSignature))
+
+        check("devices: a request without the Tailscale login is rejected",
+              rejected(signedRequest("GET", "/api/state?l=1", ts: now, key: key, device: phone.id, login: nil), .noLogin))
+        check("devices: a request from another Tailscale login is rejected",
+              rejected(signedRequest("GET", "/api/state?l=2", ts: now, key: key, device: phone.id, login: "eve@example.com"), .wrongLogin))
+        check("devices: an unknown device is rejected",
+              rejected(signedRequest("GET", "/api/state?u=1", ts: now, key: key, device: "nope"), .unknownDevice))
+
+        // Hard-coded vector from WebCrypto (non-extractable ECDSA P-256 key, raw r‖s signature).
+        let webStore = DeviceStore(file: Paths.support.appendingPathComponent("devices-webcrypto.json"))
+        let webKey = "BOx3iKYdRY4nUAZpsN98DXEemL2Fj7D6FSCuW3R77a6zPDuwe23xyjlOm8NQuWkC82fsTnTC0sdH5hgpa3Ovqsg"
+        if let web = webStore.addDevice(name: "WebCrypto", publicKey: webKey, login: "ada@example.com", now: now) {
+            let body = #"{"action":"dismiss","itemId":"A1B2"}"#
+            check("devices: WebCrypto body hash matches",
+                  DeviceStore.signedMessage(method: "POST", target: "/api/answer", ts: "1759660000000", body: Data(body.utf8))
+                    .hasSuffix("1f46c23ac6ff02d9a0a8e06242728766eae3fbfcf7a955e25b902e584d498c1f"))
+            let req = HTTPRequest(method: "POST", path: "/api/answer", query: [:], headers: [
+                "x-relay-device": web.id, "x-relay-ts": "1759660000000",
+                "x-relay-sig": "IyR2tqnhMyposEeKnEhIwSj6RvIqwk6j_H92gXD3Iy8xofAY_OxhmHzdWUOaZqXZomJd9MfTxQm5VatGPsJ26g",
+                "tailscale-user-login": "ada@example.com",
+            ], body: Data(body.utf8), remoteHost: "127.0.0.1", target: "/api/answer")
+            check("devices: a WebCrypto signature verifies", webStore.verify(req, now: now)?.id == web.id)
+        } else {
+            check("devices: the WebCrypto public key parses", false)
+        }
+        check("devices: invalid public keys are refused",
+              DeviceStore.parseKey(Data([0x04] + [UInt8](repeating: 7, count: 64)).base64URLEncodedString()) == nil
+              && DeviceStore.parseKey(key.publicKey.compressedRepresentation.base64URLEncodedString()) == nil
+              && DeviceStore.parseKey("not base64!") == nil)
+
+        // Owner and revocation.
+        check("devices: a second pairing from another login is refused",
+              store.pairingProblem(publicKey: pub, login: "eve@example.com") == .otherOwner
+              && store.addDevice(name: "Eve", publicKey: pub, login: "eve@example.com", now: now) == nil)
+        store.revoke(phone.id)
+        check("devices: a revoked device is rejected",
+              rejected(signedRequest("GET", "/api/state?r=1", ts: now, key: key, device: phone.id), .unknownDevice))
+        check("devices: revoking the last device forgets the owner", store.ownerLogin == nil
+              && store.pairingProblem(publicKey: pub, login: "eve@example.com") == nil)
+
+        // The file: 0600, and it reads back the same.
+        let mode = ((try? FileManager.default.attributesOfItem(atPath: file.path))?[.posixPermissions] as? NSNumber)?.intValue
+        check("devices: devices.json is mode 0600", mode == 0o600)
+        let reloaded = DeviceStore(file: file)
+        check("devices: devices.json reads back", reloaded.devices == store.devices && reloaded.active.isEmpty)
+
+        // Pairing codes: single use, five minutes.
+        let codes = DeviceStore(file: Paths.support.appendingPathComponent("devices-codes.json"))
+        let code = codes.newPairingCode(now: now)
+        check("devices: a pairing code is 32 random bytes", Data(base64URL: code)?.count == 32)
+        check("devices: a wrong pairing code is refused", !codes.consumePairingCode(code + "x", now: now))
+        check("devices: the pairing code works once", codes.consumePairingCode(code, now: now.addingTimeInterval(299)))
+        check("devices: a used pairing code is refused", !codes.consumePairingCode(code, now: now.addingTimeInterval(1)))
+        let late = codes.newPairingCode(now: now)
+        check("devices: an expired pairing code is refused", !codes.consumePairingCode(late, now: now.addingTimeInterval(301)))
+        let replaced = codes.newPairingCode(now: now)
+        _ = codes.newPairingCode(now: now)
+        check("devices: a new pairing code replaces the old one", !codes.consumePairingCode(replaced, now: now))
+
+        // More than 20 failures a minute starts a 60 s cool-down.
+        let cool = DeviceStore(file: Paths.support.appendingPathComponent("devices-cool.json"))
+        for i in 0..<20 { cool.recordFailure(now.addingTimeInterval(Double(i))) }
+        check("devices: 20 failures a minute don't cool down", !cool.isCoolingDown(now.addingTimeInterval(20)))
+        cool.recordFailure(now.addingTimeInterval(21))
+        let coolCode = cool.newPairingCode(now: now.addingTimeInterval(21))
+        check("devices: the 21st failure cools down", cool.isCoolingDown(now.addingTimeInterval(22)))
+        check("devices: no pairing during the cool-down", !cool.consumePairingCode(coolCode, now: now.addingTimeInterval(22)))
+        check("devices: the cool-down ends after 60 s", !cool.isCoolingDown(now.addingTimeInterval(82)))
     }
 }
