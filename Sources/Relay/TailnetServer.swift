@@ -227,7 +227,7 @@ final class RemoteAccess: ObservableObject {
 
     init(store: Store, devices: DeviceStore = .shared) {
         self.devices = devices
-        server = TailnetServer(api: RemoteAPI(store: store), devices: devices)
+        server = TailnetServer(api: RemoteAPI(store: store, devices: devices), devices: devices)
         if !Demo.isOn, UserDefaults.standard.bool(forKey: "tailnetEnabled") { setEnabled(true) }
     }
 

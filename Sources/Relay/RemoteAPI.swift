@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// What a phone may do through one door.
 enum Capability: String, CaseIterable {
@@ -11,9 +12,16 @@ enum Capability: String, CaseIterable {
 /// Each door authenticates a request first, then hands it here with what that door allows.
 final class RemoteAPI {
     private let store: Store
+    private let devices: DeviceStore
+    private let pushOverride: WebPush?
+    private var push: WebPush { pushOverride ?? .shared }
+    /// Shows a short message on the Mac.
+    var notify: (String) -> Void = { Store.shared.showToast($0) }
 
-    init(store: Store) {
+    init(store: Store, devices: DeviceStore = .shared, push: WebPush? = nil) {
         self.store = store
+        self.devices = devices
+        pushOverride = push
     }
 
     /// The capability a route needs; nil when the route doesn't exist.
@@ -21,21 +29,31 @@ final class RemoteAPI {
         switch (method, path) {
         case ("GET", "/"), ("GET", "/remote"), ("GET", "/api/state"), ("GET", "/api/session"): return .read
         case ("POST", "/api/answer"): return .answer
+        // A paired device's own settings.
+        case ("POST", "/api/push/subscribe"), ("POST", "/api/push/unsubscribe"), ("POST", "/api/push/prefs"),
+             ("POST", "/api/push/test"), ("POST", "/api/device/forget"): return .read
         default: return nil
         }
+    }
+
+    /// Routes about the calling device exist only on the tailnet door, where requests are signed by one.
+    static func needsDevice(_ path: String) -> Bool {
+        path.hasPrefix("/api/push/") || path.hasPrefix("/api/device/")
     }
 
     /// `device` is the paired device that signed the request (tailnet door only).
     func handle(_ req: HTTPRequest, _ ex: HTTPExchange, caps: Set<Capability>, device: Device? = nil) {
         // Routes a door doesn't allow look the same as routes that don't exist.
-        guard let need = Self.capability(req.method, req.path), caps.contains(need) else {
+        guard let need = Self.capability(req.method, req.path), caps.contains(need),
+              device != nil || !Self.needsDevice(req.path) else {
             ex.respond(.notFound); return
         }
+        if let device, Self.needsDevice(req.path) { deviceRoute(req, ex, device: device); return }
         switch (req.method, req.path) {
         case ("GET", "/"), ("GET", "/remote"):
             ex.respond(.text(Self.page(), type: "text/html; charset=utf-8"))
         case ("GET", "/api/state"):
-            DispatchQueue.main.async { ex.respond(.json(self.snapshot(caps: caps))) }
+            DispatchQueue.main.async { ex.respond(.json(self.snapshot(caps: caps, device: device))) }
         case ("GET", "/api/session"):
             let id = req.query["id"] ?? ""
             DispatchQueue.main.async {
@@ -80,9 +98,18 @@ final class RemoteAPI {
     // MARK: State
 
     /// Everything the page shows. Call on the main thread.
-    func snapshot(caps: Set<Capability>) -> [String: Any] {
-        Self.snapshot(workspaces: store.workspaces, sessions: Array(store.sessions.values), items: store.items,
-                      filter: store.workspaceFilter, heat: HeatMonitor.shared.heat, caps: caps)
+    func snapshot(caps: Set<Capability>, device: Device? = nil) -> [String: Any] {
+        var snap = Self.snapshot(workspaces: store.workspaces, sessions: Array(store.sessions.values), items: store.items,
+                                 filter: store.workspaceFilter, heat: HeatMonitor.shared.heat, caps: caps)
+        if let device = device.flatMap({ devices.device($0.id) }) {
+            let p = device.pushPrefs
+            snap["device"] = [
+                "id": device.id, "name": device.name, "subscribed": device.pushSubscription != nil,
+                "prefs": ["blocked": p.blocked, "finished": p.finished, "fire": p.fire, "hideContent": p.hideContent],
+                "vapidKey": push.publicKey,
+            ] as [String: Any]
+        }
+        return snap
     }
 
     static func snapshot(workspaces: [Workspace], sessions: [AgentSession], items: [InboxItem], filter: String?,
@@ -124,6 +151,69 @@ final class RemoteAPI {
         case .warm: return "warm"
         case .hot: return "hot"
         }
+    }
+
+    // MARK: The calling device
+
+    private func deviceRoute(_ req: HTTPRequest, _ ex: HTTPExchange, device: Device) {
+        let body = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+        switch req.path {
+        case "/api/push/subscribe":
+            let keys = body["keys"] as? [String: Any] ?? [:]
+            let sub = PushSubscription(endpoint: body["endpoint"] as? String ?? "",
+                                       p256dh: keys["p256dh"] as? String ?? "", auth: keys["auth"] as? String ?? "")
+            guard Self.isUsable(sub) else {
+                ex.respond(.json(["ok": false, "error": "This browser's push service isn't one Relay sends to."], status: 400)); return
+            }
+            DispatchQueue.main.async {
+                self.devices.setSubscription(sub, for: device.id)
+                ex.respond(.json(["ok": true]))
+            }
+        case "/api/push/unsubscribe":
+            DispatchQueue.main.async {
+                self.devices.setSubscription(nil, for: device.id)
+                ex.respond(.json(["ok": true]))
+            }
+        case "/api/push/prefs":
+            DispatchQueue.main.async {
+                var p = self.devices.device(device.id)?.pushPrefs ?? device.pushPrefs
+                if let v = body["blocked"] as? Bool { p.blocked = v }
+                if let v = body["finished"] as? Bool { p.finished = v }
+                if let v = body["fire"] as? Bool { p.fire = v }
+                if let v = body["hideContent"] as? Bool { p.hideContent = v }
+                self.devices.setPrefs(p, for: device.id)
+                ex.respond(.json(["ok": true]))
+            }
+        case "/api/push/test":
+            DispatchQueue.main.async {
+                let hide = self.devices.device(device.id)?.pushPrefs.hideContent ?? false
+                self.push.send(PushDispatcher.testMessage(hidden: hide), to: device.id) { outcome in
+                    switch outcome {
+                    case .delivered: ex.respond(.json(["ok": true]))
+                    case .queued: ex.respond(.json(["ok": true, "note": "The Mac is offline; it sends this when it's back."]))
+                    case .unsubscribed: ex.respond(.json(["ok": false, "error": "The push service no longer knows this device. Turn notifications on again."]))
+                    case .failed(let why): ex.respond(.json(["ok": false, "error": why]))
+                    }
+                }
+            }
+        case "/api/device/forget":
+            DispatchQueue.main.async {
+                self.devices.revoke(device.id)
+                self.notify("\(device.name) was unpaired from the phone")
+                ex.respond(.json(["ok": true]))
+            }
+        default:
+            ex.respond(.notFound)
+        }
+    }
+
+    /// A subscription Relay may send to: an allowed push service and well-formed keys.
+    static func isUsable(_ sub: PushSubscription) -> Bool {
+        guard WebPush.allowedEndpoint(sub.endpoint) != nil,
+              let key = Data(base64URL: sub.p256dh), key.count == 65,
+              (try? P256.KeyAgreement.PublicKey(x963Representation: key)) != nil,
+              Data(base64URL: sub.auth)?.count == 16 else { return false }
+        return true
     }
 
     // MARK: Answers

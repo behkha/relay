@@ -94,6 +94,7 @@ final class HeatMonitor: ObservableObject {
         for id in result.newlyHot {
             guard let s = Store.shared.sessions[id], let h = result.heat[id] else { continue }
             Store.shared.showToast("@\(s.handle) is heating up your Mac · \(h.cpuLabel)")
+            PushDispatcher.shared.agentOnFire(id, cpu: h.cpuLabel)
         }
     }
 

@@ -26,6 +26,7 @@ enum SelfTest {
         tailscale()
         tailnetDoor()
         webPush()
+        pushDispatch()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -469,7 +470,14 @@ enum SelfTest {
     private static func tailnetDoor() {
         let store = Store()
         let devices = DeviceStore(file: Paths.support.appendingPathComponent("devices-door.json"))
-        let door = TailnetServer(api: RemoteAPI(store: store), devices: devices)
+        let push = WebPush(watchNetwork: false)
+        push.keyFileOverride = Paths.support.appendingPathComponent("vapid-door.json")
+        push.devicesOverride = devices
+        var pushed: [URLRequest] = []
+        push.transport = { req, done in pushed.append(req); DispatchQueue.main.async { done(201, nil) } }
+        let api = RemoteAPI(store: store, devices: devices, push: push)
+        api.notify = { _ in }
+        let door = TailnetServer(api: api, devices: devices)
         var allow = true
         var asked: [(String, String, String)] = []
         door.confirmPairing = { name, login, fingerprint, done in
@@ -485,7 +493,7 @@ enum SelfTest {
         let port = door.port
         check("door: listens on an ephemeral loopback port", port > 0)
 
-        let second = TailnetServer(api: RemoteAPI(store: store), devices: devices)
+        let second = TailnetServer(api: api, devices: devices)
         check("door: a busy port is an error, never a fallback", (try? second.start(port: port)) == nil && !second.isRunning)
 
         let page = http("GET", port, "/")
@@ -534,6 +542,155 @@ enum SelfTest {
         let denied = http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"],
                           body: try! JSONSerialization.data(withJSONObject: ["code": denyCode, "publicKey": other, "deviceName": "x"]))
         check("door: pairing denied on the Mac stores nothing", denied.status == 403 && devices.active.count == 1)
+
+        // The device's own settings.
+        func post(_ path: String, _ object: [String: Any]) -> Reply {
+            let body = try! JSONSerialization.data(withJSONObject: object)
+            return http("POST", port, path, headers: signedHeaders("POST", path, body: body, key: key, device: deviceId), body: body)
+        }
+        let browser = P256.KeyAgreement.PrivateKey()
+        let keys = ["p256dh": browser.publicKey.x963Representation.base64URLEncodedString(),
+                    "auth": Secure.randomBytes(16).base64URLEncodedString()]
+        check("door: a push subscription outside the allowlist is refused",
+              post("/api/push/subscribe", ["endpoint": "https://evil.test/push", "keys": keys]).status == 400
+              && devices.device(deviceId)?.pushSubscription == nil)
+        check("door: a push subscription with bad keys is refused",
+              post("/api/push/subscribe", ["endpoint": "https://web.push.apple.com/abc", "keys": ["p256dh": "AAAA", "auth": "BBBB"]]).status == 400)
+        check("door: a push subscription is stored",
+              post("/api/push/subscribe", ["endpoint": "https://web.push.apple.com/abc", "keys": keys]).status == 200
+              && devices.device(deviceId)?.pushSubscription?.endpoint == "https://web.push.apple.com/abc")
+        let prefs = post("/api/push/prefs", ["finished": false, "hideContent": true])
+        let stored = devices.device(deviceId)?.pushPrefs
+        check("door: push preferences are stored", prefs.json["ok"] as? Bool == true && stored?.finished == false
+              && stored?.hideContent == true && stored?.blocked == true && stored?.fire == true)
+        let test = post("/api/push/test", [:])
+        let testBody = pushed.last?.httpBody.flatMap { try? WebPush.decrypt($0, receiver: browser, auth: Data(base64URL: keys["auth"]!)!) }
+        check("door: a test push reaches the push service, hidden when asked", test.json["ok"] as? Bool == true && pushed.count == 1
+              && pushed.first?.url?.host == "web.push.apple.com"
+              && testBody.map { String(decoding: $0, as: UTF8.self).contains(PushDispatcher.hiddenBody) } == true)
+        let described = http("GET", port, "/api/state", headers: signedHeaders("GET", "/api/state", key: key, device: deviceId))
+        let me = described.json["device"] as? [String: Any]
+        check("door: state describes the calling device", me?["id"] as? String == deviceId && me?["subscribed"] as? Bool == true
+              && (me?["vapidKey"] as? String).flatMap { Data(base64URL: $0) }?.count == 65
+              && (me?["prefs"] as? [String: Bool])?["hideContent"] == true)
+        check("door: notifications can be turned off", post("/api/push/unsubscribe", [:]).status == 200
+              && devices.device(deviceId)?.pushSubscription == nil)
+        check("door: a device can unpair itself", post("/api/device/forget", [:]).status == 200 && devices.device(deviceId) == nil)
+        check("door: an unpaired device is refused",
+              http("GET", port, "/api/state", headers: signedHeaders("GET", "/api/state", key: key, device: deviceId)).status == 401)
+
+        // The LAN door has no device, so device routes don't exist there.
+        var lanStatus: Int?
+        let exchange = HTTPExchange(queue: DispatchQueue(label: "relay.selftest")) { r in DispatchQueue.main.async { lanStatus = r.status } }
+        api.handle(HTTPRequest(method: "POST", path: "/api/push/test", query: [:], headers: [:], body: Data(), remoteHost: nil,
+                               target: "/api/push/test"), exchange, caps: [.read, .answer])
+        spin { lanStatus != nil }
+        check("api: device routes don't exist without a device", lanStatus == 404 && pushed.count == 1)
+    }
+
+    // MARK: - Push timing
+
+    private static func pushDispatch() {
+        let pd = PushDispatcher()
+        var out: [(WebPush.Message, String)] = []
+        var later: [(TimeInterval, () -> Void)] = []
+        var away = true
+        var hot = true
+        var clock = Date(timeIntervalSince1970: 1_759_660_000)
+        var waiting: [String: InboxItem] = [:]
+        let sub = PushSubscription(endpoint: "https://web.push.apple.com/x", p256dh: "", auth: "")
+        func device(_ id: String, _ edit: (inout PushPrefs) -> Void = { _ in }, subscribed: Bool = true) -> Device {
+            var d = Device(id: id, name: id, publicKey: "", ownerLogin: "ada@example.com", pairedAt: clock)
+            edit(&d.pushPrefs)
+            d.pushSubscription = subscribed ? sub : nil
+            return d
+        }
+        let everything = device("all")
+        let quiet = device("quiet") { $0.blocked = false; $0.hideContent = true }
+        let noFire = device("nofire") { $0.fire = false }
+        let off = device("off", subscribed: false)
+        var session = AgentSession(id: "s1", workspaceId: "w1", cwd: "/tmp/acme-payroll", pid: nil, terminal: TerminalLocation(),
+                                   status: .working, handle: "claude-3")
+        session.title = "Fix the payroll rounding bug"
+        pd.send = { out.append(($0, $1)) }
+        pd.devices = { [everything, quiet, noFire, off] }
+        pd.isAway = { away }
+        pd.schedule = { later.append(($0, $1)) }
+        pd.currentItem = { waiting[$0] }
+        pd.currentSession = { $0 == "s1" ? session : nil }
+        pd.isHot = { _ in hot }
+        pd.now = { clock }
+        func payload(_ m: WebPush.Message?, hidden: Bool = false) -> [String: String] {
+            (m.flatMap { try? JSONSerialization.jsonObject(with: hidden ? $0.hiddenPayload : $0.payload) as? [String: String] }) ?? [:]
+        }
+
+        var question = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .question, title: "Rounding",
+                                 body: String(repeating: "Should totals round half-even or half-up for every currency? ", count: 4))
+        question.questions = [AgentQuestion(question: question.body, header: "Rounding", options: [], multiSelect: false)]
+        waiting[question.id] = question
+        pd.itemArrived(question)
+        check("timing: away from the Mac, a question goes out right away to devices that want it",
+              out.map(\.1) == ["all", "nofire"] && later.isEmpty)
+        let q = payload(out.first?.0)
+        check("timing: payload is {title, body ≤ 120, itemId, sessionId, kind}", q["title"] == "@claude-3 asks"
+              && (q["body"]?.count ?? 0) == 120 && q["body"]?.hasSuffix("…") == true && q["itemId"] == question.id
+              && q["sessionId"] == "s1" && q["kind"] == "question" && out.first?.0.urgency == .high)
+        check("timing: the topic is 32 base64url characters, one per item",
+              out.first?.0.topic.count == 32 && out.first?.0.topic == PushDispatcher.topic(question.id)
+              && PushDispatcher.topic(question.id) != PushDispatcher.topic("other")
+              && out.first?.0.topic.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" } == true)
+
+        out = []
+        let finished = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .finished, title: "Done", body: "Rounded half-even.")
+        waiting[finished.id] = finished
+        pd.itemArrived(finished)
+        let hiddenOne = out.first { $0.1 == "quiet" }?.0
+        check("timing: finished turns go to devices that want them, normal urgency",
+              out.map(\.1) == ["all", "quiet", "nofire"] && out.first?.0.urgency == .normal
+              && payload(out.first?.0)["title"] == "Fix the payroll rounding bug")
+        check("timing: hide content sends only \"An agent needs you\"", payload(hiddenOne)["body"] == PushDispatcher.hiddenBody
+              && payload(hiddenOne)["title"] == PushDispatcher.hiddenTitle
+              && !(hiddenOne.map { String(decoding: $0.payload, as: UTF8.self).contains("payroll") } ?? true))
+        check("timing: every push carries a hidden version for 413", payload(out.first?.0, hidden: true)["body"] == PushDispatcher.hiddenBody)
+
+        out = []
+        away = false
+        let permission = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .permission, title: "Run the tests", body: "$ npm test")
+        waiting[permission.id] = permission
+        pd.itemArrived(permission)
+        check("timing: at the Mac, a push waits 45 s", out.isEmpty && later.count == 1 && later.first?.0 == 45)
+        later.removeFirst().1()
+        check("timing: still unanswered after 45 s, it goes out", out.count == 2
+              && payload(out.first?.0)["body"] == "Run the tests: $ npm test")
+        out = []
+        let answered = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .permission, title: "Edit", body: "x")
+        waiting[answered.id] = answered
+        pd.itemArrived(answered)
+        waiting[answered.id] = nil
+        later.removeFirst().1()
+        check("timing: answered at the desk, nothing goes out", out.isEmpty)
+
+        var elicit = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .waiting, title: Store.needsInputTitle, body: "Pick a file")
+        check("timing: an MCP elicitation counts as blocked", PushDispatcher.kind(of: elicit) == .blocked)
+        elicit.title = "Waiting for you"
+        check("timing: an idle agent counts as finished", PushDispatcher.kind(of: elicit) == .finished)
+
+        // On fire: at most once per agent per 10 minutes, and only while still hot.
+        away = true
+        out = []
+        pd.agentOnFire("s1", cpu: "312% CPU")
+        pd.agentOnFire("s1", cpu: "330% CPU")
+        check("timing: on fire goes out once to devices that want it", out.map(\.1) == ["all", "quiet"]
+              && payload(out.first?.0)["kind"] == "fire" && payload(out.first?.0)["body"]?.hasPrefix("312% CPU") == true)
+        clock = clock.addingTimeInterval(9 * 60)
+        pd.agentOnFire("s1", cpu: "300% CPU")
+        check("timing: not again within 10 minutes", out.count == 2)
+        clock = clock.addingTimeInterval(2 * 60)
+        hot = false
+        away = false
+        pd.agentOnFire("s1", cpu: "250% CPU")
+        later.removeFirst().1()
+        check("timing: an agent that cooled down in the 45 s isn't pushed", out.count == 2 && later.isEmpty)
     }
 
     // MARK: - Web Push

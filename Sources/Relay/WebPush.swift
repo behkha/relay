@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Network
+import CoreGraphics
 
 /// Web Push to paired phones with CryptoKit only: VAPID (RFC 8292) identifies Relay to the push
 /// service, and the payload is encrypted for the phone with aes128gcm (RFC 8291 / RFC 8188), so the
@@ -320,5 +321,154 @@ final class WebPush {
         let was = online
         online = on
         if on && !was { flush() }
+    }
+}
+
+// MARK: - When to push
+
+/// Decides when paired phones get a push. Away from the Mac (no input for 60 s, or the screen is
+/// locked) it goes out right away; otherwise it waits 45 s and goes out only if the item is still
+/// unanswered, so answering at your desk never buzzes the phone. Main thread.
+final class PushDispatcher {
+    static let shared = PushDispatcher()
+
+    static let delay: TimeInterval = 45
+    static let idleAfter: TimeInterval = 60
+    /// At most one "on fire" push per agent in this long.
+    static let fireInterval: TimeInterval = 10 * 60
+    static let hiddenTitle = "Relay"
+    static let hiddenBody = "An agent needs you"
+
+    enum Kind {
+        case blocked, finished, fire
+    }
+
+    // Seams for the self-tests.
+    var send: (WebPush.Message, String) -> Void = { WebPush.shared.send($0, to: $1) }
+    var devices: () -> [Device] = { DeviceStore.shared.active }
+    var isAway: () -> Bool = PushDispatcher.macIsIdleOrLocked
+    var schedule: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+    /// The item as it is now (it gains a title from the transcript after it arrives), nil once answered.
+    var currentItem: (String) -> InboxItem? = { id in Store.shared.items.first { $0.id == id } }
+    var currentSession: (String) -> AgentSession? = { Store.shared.sessions[$0] }
+    var isHot: (String) -> Bool = { HeatMonitor.shared.heat[$0]?.level == .hot }
+    var now: () -> Date = Date.init
+
+    private var lastFire: [String: Date] = [:]
+
+    /// No input for a minute, or the screen is locked.
+    static func macIsIdleOrLocked() -> Bool {
+        // kCGAnyInputEventType (~0): the time since any keyboard, mouse or trackpad input.
+        if let anyInput = CGEventType(rawValue: ~0),
+           CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput) >= idleAfter { return true }
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        return session?["CGSSessionScreenIsLocked"] as? Bool == true
+    }
+
+    static func kind(of item: InboxItem) -> Kind {
+        switch item.kind {
+        case .question, .permission: return .blocked
+        case .waiting: return item.title == Store.needsInputTitle ? .blocked : .finished
+        case .finished: return .finished
+        }
+    }
+
+    static func wants(_ prefs: PushPrefs, _ kind: Kind) -> Bool {
+        switch kind {
+        case .blocked: return prefs.blocked
+        case .finished: return prefs.finished
+        case .fire: return prefs.fire
+        }
+    }
+
+    /// Called next to the Mac notification for a new inbox item.
+    func itemArrived(_ item: InboxItem) {
+        guard !Demo.isOn else { return }
+        let kind = Self.kind(of: item)
+        guard devices().contains(where: { $0.pushSubscription != nil && Self.wants($0.pushPrefs, kind) }) else { return }
+        let deliver = { [weak self] in
+            guard let self, let current = self.currentItem(item.id) else { return }   // answered meanwhile
+            for d in self.devices() where d.pushSubscription != nil && Self.wants(d.pushPrefs, kind) {
+                self.send(Self.message(for: current, session: self.currentSession(current.sessionId),
+                                       hide: d.pushPrefs.hideContent), d.id)
+            }
+        }
+        if isAway() { deliver() } else { schedule(Self.delay, deliver) }
+    }
+
+    /// Called when the heat monitor flags an agent as hot.
+    func agentOnFire(_ sessionId: String, cpu: String) {
+        guard !Demo.isOn else { return }
+        let t = now()
+        if let last = lastFire[sessionId], t.timeIntervalSince(last) < Self.fireInterval { return }
+        guard devices().contains(where: { $0.pushSubscription != nil && $0.pushPrefs.fire }) else { return }
+        lastFire[sessionId] = t
+        let deliver = { [weak self] in
+            guard let self, self.isHot(sessionId), let s = self.currentSession(sessionId) else { return }
+            for d in self.devices() where d.pushSubscription != nil && d.pushPrefs.fire {
+                self.send(Self.fireMessage(session: s, cpu: cpu, hide: d.pushPrefs.hideContent), d.id)
+            }
+        }
+        if isAway() { deliver() } else { schedule(Self.delay) { [weak self] in if self?.isHot(sessionId) == true { deliver() } } }
+    }
+
+    // MARK: Messages
+
+    /// Payload `{title, body (≤120 characters), itemId, sessionId, kind}`.
+    static func message(for item: InboxItem, session: AgentSession?, hide: Bool) -> WebPush.Message {
+        let handle = "@" + (session?.handle ?? "agent")
+        let title: String
+        let body: String
+        switch item.kind {
+        case .question:
+            title = "\(handle) asks"
+            body = item.body
+        case .permission:
+            title = "\(handle) needs permission"
+            body = item.body.isEmpty ? item.title : "\(item.title): \(item.body)"
+        case .waiting:
+            title = "\(handle) is waiting"
+            body = item.body.isEmpty ? item.title : item.body
+        case .finished:
+            title = session?.displayName ?? "\(handle) finished"
+            body = item.body.isEmpty ? "Finished" : item.body
+        }
+        let kind = Self.kind(of: item)
+        return build(title: title, body: body, itemId: item.id, sessionId: item.sessionId, kind: item.kind.rawValue,
+                     urgency: kind == .blocked ? .high : .normal, topic: topic(item.id), hide: hide)
+    }
+
+    static func fireMessage(session s: AgentSession, cpu: String, hide: Bool) -> WebPush.Message {
+        build(title: "@\(s.handle) is heating up your Mac", body: "\(cpu) · \(s.displayName)", itemId: "", sessionId: s.id,
+              kind: "fire", urgency: .normal, topic: topic("fire:" + s.id), hide: hide)
+    }
+
+    static func testMessage(hidden: Bool) -> WebPush.Message {
+        build(title: "Relay", body: "Notifications work. Relay will tell you here when an agent needs you.", itemId: "",
+              sessionId: "", kind: "test", urgency: .normal, topic: topic("test"), hide: hidden)
+    }
+
+    private static func build(title: String, body: String, itemId: String, sessionId: String, kind: String,
+                              urgency: WebPush.Urgency, topic: String, hide: Bool) -> WebPush.Message {
+        func payload(_ title: String, _ body: String) -> Data {
+            let object: [String: Any] = ["title": short(title, 80), "body": short(body, 120), "itemId": itemId,
+                                         "sessionId": sessionId, "kind": kind]
+            return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+        }
+        let hidden = payload(hiddenTitle, hiddenBody)
+        return WebPush.Message(payload: hide ? hidden : payload(title, body), hiddenPayload: hidden, urgency: urgency, topic: topic)
+    }
+
+    /// One line, at most `limit` characters.
+    static func short(_ s: String, _ limit: Int) -> String {
+        let line = s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return line.count <= limit ? line : String(line.prefix(limit - 1)) + "…"
+    }
+
+    /// A newer push with the same topic replaces the older one: base64url(sha256(id)), 32 characters.
+    static func topic(_ id: String) -> String {
+        String(Data(SHA256.hash(data: Data(id.utf8))).base64URLEncodedString().prefix(32))
     }
 }

@@ -409,7 +409,7 @@ final class Store: ObservableObject {
             } else if type == "elicitation_dialog" {
                 s.status = .waiting
                 insert(InboxItem(sessionId: sessionId, workspaceId: wsId, kind: .waiting,
-                                 title: "Needs input in the terminal", body: message))
+                                 title: Self.needsInputTitle, body: message))
             }
 
         case "Stop":
@@ -492,6 +492,7 @@ final class Store: ObservableObject {
         items.append(item)
         itemArrived.send(item)
         Notifier.notify(item: item, session: sessions[item.sessionId], workspace: workspace(item.workspaceId))
+        PushDispatcher.shared.itemArrived(item)
         enrich(item.id)
         // Claude Code writes its transcript a moment after the hook fires; read it again shortly.
         let id = item.id
@@ -940,6 +941,9 @@ final class Store: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Title of the card for an MCP elicitation, which blocks the agent until you answer in its terminal.
+    static let needsInputTitle = "Needs input in the terminal"
 
     enum ReplyIntent { case yes, no, other }
 
