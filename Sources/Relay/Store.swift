@@ -374,6 +374,7 @@ final class Store: ObservableObject {
 
         case "UserPromptSubmit":
             s.status = .working
+            s.turnStartedAt = Date()
             if let p = payload["prompt"] as? String { s.lastPrompt = p }
             // You typed into the agent directly: the parked waiter from the last turn is stale.
             waiters.removeValue(forKey: sessionId)?.respond(.empty)
@@ -1004,6 +1005,7 @@ final class Store: ObservableObject {
         exchange.respond(.text(text))
         if var s = sessions[sessionId] {
             s.status = .working
+            s.turnStartedAt = Date()
             s.lastPrompt = text
             sessions[sessionId] = s
         }

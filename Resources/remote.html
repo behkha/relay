@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Relay">
 <meta name="theme-color" content="#000000">
+<meta name="referrer" content="no-referrer">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <title>Relay</title>
@@ -82,6 +83,22 @@
   .filters button.f.on { background: #fff; color: #000; border-color: #fff; }
   .filters button.f span { margin-left: 5px; opacity: .6; font-variant-numeric: tabular-nums; }
   .filters .clear-all { margin-left: auto; }
+  .arts { margin: -2px 0 12px; }
+  .arts .sub { margin-bottom: 6px; }
+  .art { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; background: rgba(76,141,255,.1); border: 1px solid rgba(76,141,255,.35);
+    color: var(--text); border-radius: 11px; padding: 9px 11px; margin-bottom: 6px; font-size: 14px; font-weight: 600; }
+  .art i { font-style: normal; width: 26px; height: 26px; border-radius: 7px; background: rgba(76,141,255,.2); display: grid; place-items: center; font-size: 13px; flex: none; }
+  .art span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .art small { display: block; color: var(--faint); font-weight: 400; font-size: 12px; margin-top: 1px; }
+  .art em { font-style: normal; color: var(--blue); font-size: 13px; flex: none; }
+  .art.old { background: var(--row); border-color: var(--border); }
+  .art.old i { background: rgba(255,255,255,.08); }
+  .viewer { flex: 1; width: 100%; border: 0; border-radius: 10px; background: #fff; min-height: 60vh; }
+  .viewer-img { max-width: 100%; border-radius: 10px; align-self: center; }
+  a.mini, a.ghost { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+  a.mini { color: var(--blue); }
+  a.ghost { color: var(--dim); }
+  a.send { color: #000; }
   .title-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
   .title-row .title { flex: 1; margin-bottom: 0; }
   .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
@@ -201,7 +218,8 @@
   </div>
   <div class="seg" id="sheetSeg" hidden>
     <button data-act="view" data-id="chat">Conversation</button>
-    <button data-act="view" data-id="term">Terminal</button>
+    <button data-act="view" data-id="arts" id="segArts">Artifacts</button>
+    <button data-act="view" data-id="term" id="segTerm">Terminal</button>
   </div>
   <div class="sheet-body" id="sheetBody"></div>
   <pre class="term" id="sheetTerm" hidden></pre>
@@ -225,6 +243,15 @@
     <div class="handle grow">This device</div>
   </div>
   <div class="sheet-body" id="deviceBody"></div>
+</div>
+
+<div id="artSheet" class="sheet">
+  <div class="sheet-head">
+    <button class="ghost" data-act="close-art">‹ Back</button>
+    <div class="grow"><div class="handle" id="artTitle"></div><div class="sub" id="artSub"></div></div>
+    <a class="mini" id="artLink" target="_blank" rel="noopener noreferrer" hidden>claude.ai ↗</a>
+  </div>
+  <div class="sheet-body" id="artBody"></div>
 </div>
 
 <div id="pair" class="screen" hidden></div>
@@ -608,6 +635,7 @@ function cardHTML(it) {
     <div class="agent" data-act="session" data-id="${esc(it.sessionId)}"><div class="avatar">✻<b style="background:${statusColor[s.status] || '#888'}"></b></div>
       <div style="min-width:0"><div class="handle">@${esc(s.handle)} ${heatBadge(s)}</div><div class="sub">${esc(s.path)} · ${word}</div></div>
       ${chip(ws(it.workspaceId))}</div>
+    ${turnArtifacts(it)}
     ${body}
     <form class="reply" data-item="${id}">
       <input data-item="${id}" placeholder="${ph}" value="${esc(drafts[it.id] || '')}" enterkeyhint="send" autocomplete="off">
@@ -617,6 +645,76 @@ function cardHTML(it) {
 }
 
 const tabScroll = {};   // each tab keeps its own scroll position
+// MARK: Artifacts
+
+const artIcon = (k) => ({ html: '◧', markdown: '¶', image: '▣', pdf: '⎙', text: '≡' }[k] || '⇩');
+function artButton(sid, a, old) {
+  const sub = [a.caption, ago(a.createdAt)].filter(Boolean).join(' · ');
+  return `<button class="art ${old ? 'old' : ''}" data-act="artifact" data-sid="${esc(sid)}" data-id="${esc(a.id)}"><i>${artIcon(a.kind)}</i>
+    <span>${esc(a.title)}<small>${esc(sub)}</small></span><em>View</em></button>`;
+}
+// What the agent made during this turn, so you can look at it before you answer.
+function turnArtifacts(it) {
+  const s = sess(it.sessionId);
+  const list = ((s && s.artifacts) || []).filter(a => a.inTurn);
+  if (!list.length) return '';
+  const label = it.kind === 'question' || it.kind === 'permission' ? 'Made this turn · look before you answer' : 'Made this turn';
+  return `<div class="arts"><div class="sub">${label}</div>${list.slice(0, 4).map(a => artButton(it.sessionId, a)).join('')}</div>`;
+}
+function artifactsHTML(s) {
+  const list = (s && s.artifacts) || [];
+  if (!list.length) return '<div class="b-note">No artifacts in this session yet.</div>';
+  return list.map(a => artButton(s.id, a, !a.inTurn)).join('');
+}
+
+let artOpen = null;
+async function openArtifact(sid, id) {
+  const s = sess(sid);
+  const a = ((s && s.artifacts) || []).find(x => x.id === id) || { title: 'Artifact' };
+  artOpen = sid + '/' + id;
+  $('#artTitle').textContent = a.title || 'Artifact';
+  $('#artSub').textContent = '@' + ((s && s.handle) || 'agent') + (a.name ? ' · ' + a.name : '');
+  setArtLink(a.url);
+  $('#artBody').innerHTML = '<div class="b-note">Opening…</div>';
+  showSheet('artSheet');
+  let r;
+  try { r = await api('/api/artifact/open', { sessionId: sid, artifactId: id }); }
+  catch (e) { $('#artBody').innerHTML = '<div class="note">Can\'t reach the Mac.</div>'; return; }
+  if (artOpen !== sid + '/' + id) return;   // closed or switched meanwhile
+  setArtLink(r.claudeUrl || a.url);
+  if (!r.ok) {
+    $('#artBody').innerHTML = `<div class="note">${esc(r.error || "Couldn't open it.")}</div>`
+      + (r.claudeUrl ? `<a class="send big" style="display:block;text-align:center;text-decoration:none" href="${esc(r.claudeUrl)}" target="_blank" rel="noopener noreferrer">Open on claude.ai</a>` : '');
+    return;
+  }
+  const body = $('#artBody');
+  if (r.kind === 'html' || r.kind === 'pdf') {
+    // An artifact is a page the agent wrote: it runs sandboxed, in its own opaque origin, so it can't
+    // touch this page, its storage or Relay's API. The server sends the same sandbox as a header.
+    const sandbox = r.kind === 'html' ? ' sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals allow-downloads"' : '';
+    body.innerHTML = `<iframe class="viewer"${sandbox} referrerpolicy="no-referrer" src="${esc(r.url)}" title="${esc(r.title)}"></iframe>`
+      + `<a class="ghost" style="text-align:center;text-decoration:none;border-radius:11px;padding:9px" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Open full screen</a>`;
+  } else if (r.kind === 'image') {
+    body.innerHTML = `<img class="viewer-img" src="${esc(r.url)}" alt="${esc(r.title)}">`;
+  } else if (r.kind === 'markdown' || r.kind === 'text') {
+    try {
+      const res = await fetch(r.url, { cache: 'no-store', credentials: 'omit' });
+      const text = await res.text();
+      if (artOpen !== sid + '/' + id) return;
+      body.innerHTML = r.kind === 'markdown' ? `<div class="md">${md(text)}</div>` : `<pre class="term" style="flex:none">${esc(text.slice(0, 200000))}</pre>`;
+    } catch (e) { body.innerHTML = '<div class="note">Can\'t reach the Mac.</div>'; }
+  } else {
+    body.innerHTML = `<div class="note">The phone can't preview this kind of file.</div>
+      <a class="send big" style="display:block;text-align:center;text-decoration:none" href="${esc(r.url)}" download>Download ${esc(r.name || '')}</a>`;
+  }
+}
+function setArtLink(url) {
+  const l = $('#artLink');
+  l.hidden = !url;
+  if (url) l.href = url; else l.removeAttribute('href');
+}
+function closeArtifact() { artOpen = null; $('#artBody').innerHTML = ''; hideSheet('artSheet'); }
+
 function setTab(t, slide) {
   const prev = tab;
   tab = t === 'agents' ? 'agents' : 'inbox';
@@ -769,6 +867,7 @@ async function openSession(id) {
   $('#sheetTerm').textContent = '';
   $('#sheetBody').hidden = false;
   $('#sheetTerm').hidden = true;
+  $('#sheetForm').hidden = false;
   showSheet('sheet');
   clearInterval(sheetTimer);
   sheetTimer = setInterval(() => { if (!document.hidden) refreshSheet(false); }, 2500);
@@ -784,15 +883,21 @@ function renderSheetHead() {
   $('#sheetInput').placeholder = 'Message @' + (s.handle || 'agent') + '…';
   $('#sheetKill').hidden = !(caps.has('control') && s.canKill);
   const terminal = caps.has('control') && s.tmux;
-  $('#sheetSeg').hidden = !terminal;
-  if (!terminal && view === 'term') setView('chat');
+  const arts = (s.artifacts || []).length;
+  $('#segTerm').hidden = !terminal;
+  $('#segArts').hidden = !arts;
+  $('#segArts').textContent = arts ? 'Artifacts · ' + arts : 'Artifacts';
+  $('#sheetSeg').hidden = !terminal && !arts;
+  if ((!terminal && view === 'term') || (!arts && view === 'arts')) setView('chat');
   segOn('#sheetSeg', view);
 }
 
 function setView(v) {
-  view = v === 'term' ? 'term' : 'chat';
+  view = v === 'term' || v === 'arts' ? v : 'chat';
   segOn('#sheetSeg', view);
-  $('#sheetBody').hidden = view !== 'chat';
+  $('#sheetBody').dataset.sig = '';
+  $('#sheetBody').hidden = view === 'term';
+  $('#sheetForm').hidden = view === 'arts';
   $('#sheetTerm').hidden = view !== 'term';
   refreshSheet(true);
 }
@@ -800,6 +905,11 @@ function setView(v) {
 function refreshSheet(scroll) {
   if (!openSessionId) return;
   renderSheetHead();
+  if (view === 'arts') {
+    const body = $('#sheetBody'), html = artifactsHTML(sess(openSessionId));
+    if (body.dataset.sig !== html) { body.innerHTML = html; body.dataset.sig = html; }
+    return;
+  }
   return view === 'term' ? refreshTerminal() : refreshSession(scroll);
 }
 
@@ -1186,6 +1296,8 @@ document.addEventListener('click', (e) => {
     case 'kind': kind = id; keep('relay.kind', kind); render(); break;
     case 'session': openSession(id); break;
     case 'close-session': closeSession(); break;
+    case 'artifact': e.stopPropagation(); openArtifact(el.dataset.sid, id); break;
+    case 'close-art': closeArtifact(); break;
     case 'close': hideSheet(id); break;
     case 'view': setView(id); break;
     case 'kill': e.stopPropagation(); askKill(id); break;

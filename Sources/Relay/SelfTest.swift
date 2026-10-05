@@ -23,6 +23,7 @@ enum SelfTest {
         defer { try? FileManager.default.removeItem(at: sandbox) }
         harness()
         inbox()
+        artifacts()
         remoteAPI()
         devices()
         tailscale()
@@ -107,6 +108,120 @@ enum SelfTest {
         check("inbox: Done holds finished and idle agents",
               [done, idle].allSatisfy(InboxFilter.done.matches) && ![ask, bash, elicit].contains(where: InboxFilter.done.matches))
         check("inbox: All holds everything", [ask, bash, elicit, done, idle].allSatisfy(InboxFilter.all.matches))
+    }
+
+    // MARK: - Artifacts
+
+    private static func artifacts() {
+        func line(_ obj: [String: Any]) -> String { Store.jsonString(obj) }
+        let publish = line(["type": "assistant", "timestamp": "2026-10-05T10:00:00.000Z", "message": ["content": [
+            ["type": "tool_use", "id": "toolu_A", "name": "Artifact",
+             "input": ["file_path": "/tmp/x/options.html", "description": "Three layouts"]]]]])
+        let published = line(["type": "user", "timestamp": "2026-10-05T10:00:05.000Z",
+                              "toolUseResult": ["url": "https://claude.ai/artifact/abc", "path": "/tmp/x/options.html", "title": "Layout options"],
+                              "message": ["content": [["type": "tool_result", "tool_use_id": "toolu_A", "content": "Published"]]]])
+        let read = line(["type": "assistant", "message": ["content": [
+            ["type": "tool_use", "id": "toolu_R", "name": "Artifact", "input": ["action": "read", "url": "https://claude.ai/artifact/abc"]]]]])
+        let readDone = line(["type": "user", "message": ["content": [["type": "tool_result", "tool_use_id": "toolu_R", "content": "<html>"]]]])
+        let send = line(["type": "assistant", "message": ["content": [
+            ["type": "tool_use", "id": "toolu_S", "name": "SendUserFile", "input": ["files": ["/tmp/x/report.md", "/tmp/x/chart.png"]]]]]])
+        let sent = line(["type": "user", "timestamp": "2026-10-05T10:01:00Z",
+                         "toolUseResult": ["caption": "The report", "attachments": [["path": "/tmp/x/report.md"], ["path": "/tmp/x/chart.png"]]],
+                         "message": ["content": [["type": "tool_result", "tool_use_id": "toolu_S", "content": "2 files delivered"]]]])
+        let failed = line(["type": "assistant", "message": ["content": [
+            ["type": "tool_use", "id": "toolu_F", "name": "SendUserFile", "input": ["files": ["/tmp/x/missing.txt"]]]]]])
+        let failedDone = line(["type": "user", "message": ["content": [["type": "tool_result", "tool_use_id": "toolu_F", "is_error": true, "content": "no such file"]]]])
+        let evil = line(["type": "assistant", "message": ["content": [
+            ["type": "tool_use", "id": "toolu_E", "name": "Artifact", "input": ["file_path": "/tmp/x/e.html"]]]]])
+        let evilDone = line(["type": "user", "toolUseResult": ["url": "https://evil.example/artifact/x", "path": "/tmp/x/e.html"],
+                             "message": ["content": [["type": "tool_result", "tool_use_id": "toolu_E", "content": "Published"]]]])
+
+        var pending: [String: (name: String, input: [String: Any])] = [:]
+        var refs: [ArtifactRef] = []
+        let all = [publish, published, read, readDone, send, sent, failed, failedDone, evil, evilDone].joined(separator: "\n") + "\n"
+        ArtifactIndex.scan(Data(all.utf8), pending: &pending, refs: &refs)
+        let page = refs.first { $0.path == "/tmp/x/options.html" }
+        check("artifacts: a published page is found with its title, link and caption",
+              page?.title == "Layout options" && page?.url == "https://claude.ai/artifact/abc" && page?.caption == "Three layouts"
+              && page?.kind == .html && page?.createdAt == ArtifactIndex.parseDate("2026-10-05T10:00:05.000Z"))
+        check("artifacts: files sent to you are found, one entry each",
+              refs.filter { $0.path == "/tmp/x/report.md" || $0.path == "/tmp/x/chart.png" }.count == 2
+              && refs.first { $0.path == "/tmp/x/report.md" }?.kind == .markdown && refs.first { $0.path == "/tmp/x/chart.png" }?.kind == .image)
+        check("artifacts: reads and failed sends aren't artifacts", !refs.contains { $0.path.contains("missing") } && refs.count == 4)
+        check("artifacts: only claude.ai artifact links are passed on", refs.first { $0.path == "/tmp/x/e.html" }?.url == nil)
+        check("artifacts: newest first", refs.first?.path == "/tmp/x/e.html")
+        check("artifacts: nothing left waiting for a result", pending.isEmpty)
+
+        // A republish of the same file keeps one entry, moved to the top, still with its link.
+        let republish = line(["type": "assistant", "message": ["content": [
+            ["type": "tool_use", "id": "toolu_B", "name": "Artifact", "input": ["file_path": "/tmp/x/options.html"]]]]])
+        let republished = line(["type": "user", "toolUseResult": ["path": "/tmp/x/options.html"],
+                                "message": ["content": [["type": "tool_result", "tool_use_id": "toolu_B", "content": "Updated"]]]])
+        ArtifactIndex.scan(Data((republish + "\n" + republished + "\n").utf8), pending: &pending, refs: &refs)
+        check("artifacts: a republished page stays one entry and keeps its link",
+              refs.count == 4 && refs.first?.path == "/tmp/x/options.html" && refs.first?.url == "https://claude.ai/artifact/abc")
+
+        // Incremental reads: a half-written last line waits for the next read.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("relay-selftest-art-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let transcript = dir.appendingPathComponent("t.jsonl")
+        try? Data((publish + "\n" + published.prefix(40)).utf8).write(to: transcript)
+        let index = ArtifactIndex()
+        let first = index.current(transcript.path)
+        if let h = FileHandle(forWritingAtPath: transcript.path) {
+            h.seekToEndOfFile(); h.write(Data((published.dropFirst(40) + "\n").utf8)); try? h.close()
+        }
+        let second = index.current(transcript.path)
+        check("artifacts: a half-written line is read once it's complete", first.isEmpty && second.first?.title == "Layout options")
+
+        // Tickets.
+        let tickets = ArtifactTickets()
+        var clock = Date(timeIntervalSince1970: 1_759_660_000)
+        tickets.now = { clock }
+        let file = dir.appendingPathComponent("page.html")
+        try? Data("<h1>hi</h1>".utf8).write(to: file)
+        let t = tickets.issue(path: file.path)
+        check("tickets: 32 random bytes, URL-safe", t.count == 43 && t.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+              && tickets.issue(path: file.path) != t)
+        check("tickets: a ticket opens its file, with or without a name after it",
+              tickets.path(for: "/view/\(t)") == file.path && tickets.path(for: "/view/\(t)/page.html") == file.path)
+        check("tickets: unknown or malformed tickets open nothing",
+              tickets.path(for: "/view/nope") == nil && tickets.path(for: "/view/") == nil && tickets.path(for: "/api/\(t)") == nil)
+        let served = tickets.response(for: "/view/\(t)/page.html")
+        check("tickets: a page is served sandboxed, frameable only by Relay's page",
+              served.status == 200 && served.contentType.hasPrefix("text/html")
+              && served.extraHeaders["Content-Security-Policy"]?.hasPrefix("sandbox allow-scripts") == true
+              && served.extraHeaders["Content-Security-Policy"]?.contains("allow-same-origin") == false
+              && served.extraHeaders["Content-Security-Policy"]?.contains("frame-ancestors 'self'") == true
+              && served.extraHeaders["X-Content-Type-Options"] == "nosniff" && served.extraHeaders["Referrer-Policy"] == "no-referrer")
+        check("tickets: images and PDFs aren't sandboxed; SVG is",
+              ArtifactTickets.headers(for: "/a.png")["Content-Security-Policy"] == "frame-ancestors 'self'"
+              && ArtifactTickets.headers(for: "/a.pdf")["Content-Security-Policy"] == "frame-ancestors 'self'"
+              && ArtifactTickets.headers(for: "/a.svg")["Content-Security-Policy"]?.hasPrefix("sandbox") == true)
+        check("tickets: other text is served as plain text, unknown files as downloads",
+              ArtifactTickets.contentType("/a.js") == "text/plain; charset=utf-8" && ArtifactTickets.contentType("/a.md") == "text/plain; charset=utf-8"
+              && ArtifactTickets.contentType("/a.zip") == "application/octet-stream"
+              && ArtifactTickets.headers(for: "/a.zip")["Content-Disposition"]?.hasPrefix("attachment") == true)
+        clock = clock.addingTimeInterval(ArtifactTickets.ttl + 1)
+        check("tickets: expire after 10 minutes", tickets.path(for: "/view/\(t)") == nil && tickets.response(for: "/view/\(t)").status == 404)
+        let gone = tickets.issue(path: dir.appendingPathComponent("deleted.html").path)
+        check("tickets: a deleted file is a 404", tickets.response(for: "/view/\(gone)").status == 404)
+
+        // The phone's view of them.
+        var s = AgentSession(id: "s1", workspaceId: "w1", cwd: "/tmp", pid: nil, terminal: TerminalLocation(), status: .waiting, handle: "claude-1")
+        let now = Date(timeIntervalSince1970: 1_759_660_000)
+        s.turnStartedAt = now.addingTimeInterval(-60)
+        let fresh = ArtifactRef(id: "a", path: "/tmp/x/a.html", title: "A", url: "https://claude.ai/artifact/a", caption: nil, createdAt: now.addingTimeInterval(-10))
+        let older = ArtifactRef(id: "b", path: "/tmp/x/b.md", title: "B", url: nil, caption: "notes", createdAt: now.addingTimeInterval(-600))
+        let snap = RemoteAPI.snapshot(workspaces: [], sessions: [s], items: [], filter: nil, heat: [:], caps: [.read, .answer],
+                                      artifacts: { _ in [fresh, older] }, now: now)
+        let arts = ((snap["sessions"] as? [[String: Any]])?.first?["artifacts"] as? [[String: Any]]) ?? []
+        check("artifacts: the snapshot lists them without paths, marking this turn's",
+              arts.count == 2 && arts[0]["inTurn"] as? Bool == true && arts[1]["inTurn"] as? Bool == false
+              && arts[0]["url"] as? String == "https://claude.ai/artifact/a" && arts[1]["kind"] as? String == "markdown"
+              && !arts.contains { $0["path"] != nil } && JSONSerialization.isValidJSONObject(snap))
+        check("artifacts: opening one needs only read access", RemoteAPI.capability("POST", "/api/artifact/open") == .read)
     }
 
     // MARK: - Remote API

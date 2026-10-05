@@ -135,6 +135,8 @@ struct AgentSession: Codable, Identifiable, Hashable {
     var title: String?
     /// Background tasks (shell commands, agents, workflows) the agent left running after its turn.
     var backgroundTasks: Int?
+    /// When the current (or last) turn started: artifacts made since then belong to it.
+    var turnStartedAt: Date?
 
     /// The status to show: an agent whose turn ended but whose background tasks still run is still working.
     var shownStatus: AgentStatus {

@@ -123,6 +123,9 @@ final class TailnetServer {
             ex.respond(Self.asset(path))
         case ("POST", "/api/pair"):
             pair(req, ex)
+        case ("GET", let path) where path.hasPrefix(ArtifactTickets.prefix):
+            // The ticket is the credential: the phone got it from a signed request a moment ago.
+            ex.respond(ArtifactTickets.shared.response(for: path))
         default:
             authenticated(req, ex)
         }

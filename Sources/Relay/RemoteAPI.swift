@@ -31,7 +31,8 @@ final class RemoteAPI {
     /// The capability a route needs; nil when the route doesn't exist.
     static func capability(_ method: String, _ path: String) -> Capability? {
         switch (method, path) {
-        case ("GET", "/"), ("GET", "/remote"), ("GET", "/api/state"), ("GET", "/api/session"): return .read
+        case ("GET", "/"), ("GET", "/remote"), ("GET", "/api/state"), ("GET", "/api/session"),
+             ("POST", "/api/artifact/open"): return .read
         case ("POST", "/api/answer"): return .answer
         case ("GET", "/api/folders"), ("POST", "/api/start"), ("POST", "/api/kill"), ("GET", "/api/terminal"),
              ("POST", "/api/launch/dismiss"): return .control
@@ -72,6 +73,8 @@ final class RemoteAPI {
                     ex.respond(.json(["ok": true, "entries": RemoteAPI.transcriptJSON(path)]))
                 }
             }
+        case ("POST", "/api/artifact/open"):
+            openArtifact(req, ex)
         case ("POST", "/api/answer"):
             guard let body = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] else {
                 ex.respond(.json(["ok": false, "error": "bad request"], status: 400)); return
@@ -110,7 +113,8 @@ final class RemoteAPI {
     func snapshot(caps: Set<Capability>, device: Device? = nil) -> [String: Any] {
         var snap = Self.snapshot(workspaces: store.workspaces, sessions: Array(store.sessions.values), items: store.items,
                                  filter: store.workspaceFilter, heat: HeatMonitor.shared.heat, caps: caps,
-                                 launches: store.launches, canKill: store.canKill)
+                                 launches: store.launches, canKill: store.canKill,
+                                 artifacts: { ArtifactIndex.shared.cached($0.transcriptPath) })
         if let device = device.flatMap({ devices.device($0.id) }) {
             let p = device.pushPrefs
             snap["device"] = [
@@ -124,7 +128,8 @@ final class RemoteAPI {
 
     static func snapshot(workspaces: [Workspace], sessions: [AgentSession], items: [InboxItem], filter: String?,
                          heat: [String: SessionHeat], caps: Set<Capability>, launches: [Store.PendingLaunch] = [],
-                         canKill: (String) -> Bool = { _ in false }) -> [String: Any] {
+                         canKill: (String) -> Bool = { _ in false },
+                         artifacts: (AgentSession) -> [ArtifactRef] = { _ in [] }, now: Date = Date()) -> [String: Any] {
         let control = caps.contains(.control)
         let workspaces = workspaces.map { ["id": $0.id, "name": $0.name, "color": $0.colorHex, "email": $0.email ?? ""] }
         let sessions = sessions.sorted { $0.startedAt < $1.startedAt }.map { s -> [String: Any] in
@@ -137,6 +142,8 @@ final class RemoteAPI {
             let h = heat[s.id]
             d["cpu"] = Int((h?.cpu ?? 0).rounded())
             d["heat"] = Self.heatName(h?.level ?? .none)
+            let made = artifacts(s)
+            if !made.isEmpty { d["artifacts"] = made.prefix(12).map { Self.artifactJSON($0, session: s, now: now) } }
             if control {
                 d["canKill"] = canKill(s.id)
                 d["tmux"] = !(s.terminal.tmuxPane ?? "").isEmpty
@@ -170,11 +177,61 @@ final class RemoteAPI {
         return snap
     }
 
+    /// One artifact for the phone. `inTurn`: made during the session's current turn (or, when Relay
+    /// didn't see the turn start, in the last 30 minutes), so it may be what a question is about.
+    static func artifactJSON(_ a: ArtifactRef, session s: AgentSession, now: Date) -> [String: Any] {
+        let since = s.turnStartedAt ?? now.addingTimeInterval(-30 * 60)
+        var d: [String: Any] = ["id": a.id, "title": a.title, "kind": a.kind.rawValue,
+                                "createdAt": a.createdAt.timeIntervalSince1970 * 1000, "inTurn": a.createdAt >= since,
+                                "name": (a.path as NSString).lastPathComponent]
+        if let url = a.url { d["url"] = url }
+        if let c = a.caption, !c.isEmpty { d["caption"] = String(c.prefix(300)) }
+        return d
+    }
+
     static func heatName(_ level: HeatLevel) -> String {
         switch level {
         case .none: return "none"
         case .warm: return "warm"
         case .hot: return "hot"
+        }
+    }
+
+    // MARK: Artifacts
+
+    /// POST /api/artifact/open {sessionId, artifactId}: a ticket link for one file the agent made.
+    /// Only files the session's transcript shows it published or sent can be opened, never a path from the phone.
+    private func openArtifact(_ req: HTTPRequest, _ ex: HTTPExchange) {
+        let body = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+        let sid = body["sessionId"] as? String ?? ""
+        let aid = body["artifactId"] as? String ?? ""
+        DispatchQueue.main.async {
+            guard let path = self.store.sessions[sid]?.transcriptPath else {
+                ex.respond(.json(["ok": false, "error": "That agent is gone."])); return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let a = ArtifactIndex.shared.current(path).first(where: { $0.id == aid }) else {
+                    ex.respond(.json(["ok": false, "error": "That artifact isn't in this session."])); return
+                }
+                var r: [String: Any] = ["ok": false, "title": a.title, "kind": a.kind.rawValue, "name": (a.path as NSString).lastPathComponent]
+                if let url = a.url { r["claudeUrl"] = url }
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: a.path, isDirectory: &isDir), !isDir.boolValue,
+                      let size = (try? FileManager.default.attributesOfItem(atPath: a.path)[.size] as? Int) ?? nil else {
+                    r["error"] = a.url == nil ? "That file isn't on the Mac anymore." : "That file isn't on the Mac anymore. It's still on claude.ai."
+                    ex.respond(.json(r)); return
+                }
+                r["size"] = size
+                guard size <= ArtifactTickets.maxBytes else {
+                    r["error"] = "It's too big to open on the phone (\(size / 1_048_576) MB)."
+                    ex.respond(.json(r)); return
+                }
+                let ticket = ArtifactTickets.shared.issue(path: a.path)
+                let name = (a.path as NSString).lastPathComponent.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "file"
+                r["ok"] = true
+                r["url"] = ArtifactTickets.prefix + ticket + "/" + name
+                ex.respond(.json(r))
+            }
         }
     }
 

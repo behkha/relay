@@ -119,6 +119,10 @@ final class RemoteServer: ObservableObject {
     // MARK: Routes
 
     private func handle(_ req: HTTPRequest, _ ex: HTTPExchange) {
+        // The ticket is the credential (the page got it with the token), so the token never reaches an artifact.
+        if req.method == "GET", req.path.hasPrefix(ArtifactTickets.prefix) {
+            ex.respond(ArtifactTickets.shared.response(for: req.path)); return
+        }
         guard authorized(req) else { ex.respond(.unauthorized); return }
         api.handle(req, ex, caps: [.read, .answer])
     }
