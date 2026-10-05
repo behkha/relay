@@ -25,6 +25,7 @@ enum SelfTest {
         devices()
         tailscale()
         tailnetDoor()
+        webPush()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -533,5 +534,171 @@ enum SelfTest {
         let denied = http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"],
                           body: try! JSONSerialization.data(withJSONObject: ["code": denyCode, "publicKey": other, "deviceName": "x"]))
         check("door: pairing denied on the Mac stores nothing", denied.status == 403 && devices.active.count == 1)
+    }
+
+    // MARK: - Web Push
+
+    /// Turns the main run loop until `done` is true (or 10 s pass).
+    private static func spin(until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(10)
+        while !done() && Date() < deadline { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
+    }
+
+    private static func webPush() {
+        // RFC 8291 §5 and Appendix A.
+        let b = { (s: String) in Data(base64URL: s) ?? Data() }
+        let uaPrivate = try? P256.KeyAgreement.PrivateKey(rawRepresentation: b("q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94"))
+        let asPrivate = try? P256.KeyAgreement.PrivateKey(rawRepresentation: b("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"))
+        let auth = b("BTBZMqHH6r4Tts7J_aSIgg")
+        let salt = b("DGv6ra1nlYgDCS1FRnbzlw")
+        let plaintext = Data("When I grow up, I want to be a watermelon".utf8)
+        let published = "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+        if let ua = uaPrivate, let sender = asPrivate {
+            let uaPublic = ua.publicKey.x963Representation
+            check("push: RFC 8291 keys match the example",
+                  uaPublic.base64URLEncodedString() == "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+                  && sender.publicKey.x963Representation.base64URLEncodedString() == "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8")
+            if let shared = try? sender.sharedSecretFromKeyAgreement(with: ua.publicKey) {
+                let keys = WebPush.deriveKeys(shared: shared, auth: auth, uaPublic: uaPublic,
+                                              asPublic: sender.publicKey.x963Representation, salt: salt)
+                check("push: RFC 8291 intermediate values match (ECDH, IKM, CEK, nonce)",
+                      shared.withUnsafeBytes { Data($0) }.base64URLEncodedString() == "kyrL1jIIOHEzg3sM2ZWRHDRB62YACZhhSlknJ672kSs"
+                      && keys.ikm.base64URLEncodedString() == "S4lYMb_L0FxCeq0WhDx813KgSYqU26kOyzWUdsXYyrg"
+                      && keys.cek.base64URLEncodedString() == "oIhVW04MRdy2XN9CiKLxTg"
+                      && keys.nonce.base64URLEncodedString() == "4h_95klXJ5E_qnoN")
+            }
+            let body = try? WebPush.encrypt(plaintext, p256dh: uaPublic, auth: auth, salt: salt, sender: sender)
+            check("push: RFC 8291 example encrypts to the published body", body?.base64URLEncodedString() == published)
+            check("push: RFC 8291 published body decrypts", (try? WebPush.decrypt(b(published), receiver: ua, auth: auth)) == plaintext)
+        } else {
+            check("push: RFC 8291 keys load", false)
+        }
+
+        let phone = P256.KeyAgreement.PrivateKey()
+        let phoneAuth = Secure.randomBytes(16)
+        let message = Data(#"{"title":"@claude-3 asks","body":"Run the tests?"}"#.utf8)
+        let sealed = try? WebPush.encrypt(message, p256dh: phone.publicKey.x963Representation, auth: phoneAuth)
+        check("push: a message round-trips with fresh keys", sealed.flatMap { try? WebPush.decrypt($0, receiver: phone, auth: phoneAuth) } == message)
+        check("push: two encryptions of one message differ (fresh salt and key)",
+              (try? WebPush.encrypt(message, p256dh: phone.publicKey.x963Representation, auth: phoneAuth)) != sealed)
+        check("push: a payload larger than one record is refused",
+              (try? WebPush.encrypt(Data(count: 4080), p256dh: phone.publicKey.x963Representation, auth: phoneAuth)) == nil)
+        check("push: a tampered body doesn't decrypt", sealed.map { body -> Bool in
+            var t = body; t[t.count - 20] ^= 1
+            return (try? WebPush.decrypt(t, receiver: phone, auth: phoneAuth)) == nil
+        } ?? false)
+
+        // VAPID.
+        let push = WebPush(watchNetwork: false)
+        push.keyFileOverride = Paths.support.appendingPathComponent("vapid-test.json")
+        let vapid = push.vapidKey()
+        let mode = ((try? FileManager.default.attributesOfItem(atPath: push.keyFile.path))?[.posixPermissions] as? NSNumber)?.intValue
+        check("push: the VAPID key is saved 0600 and reloads", mode == 0o600
+              && WebPush.loadKey(push.keyFile)?.rawRepresentation == vapid.rawRepresentation)
+        let now = Date(timeIntervalSince1970: 1_759_660_000)
+        let jwt = WebPush.jwt(audience: "https://web.push.apple.com", key: vapid, now: now)
+        let parts = jwt.split(separator: ".").map(String.init)
+        func json(_ s: String) -> [String: Any] { (Data(base64URL: s)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:] }
+        if parts.count == 3 {
+            let header = json(parts[0]), claims = json(parts[1])
+            check("push: the JWT header is ES256", header["alg"] as? String == "ES256" && header["typ"] as? String == "JWT")
+            check("push: the JWT claims name the push service, 12 h and an https contact",
+                  claims["aud"] as? String == "https://web.push.apple.com"
+                  && claims["exp"] as? Int == Int(now.timeIntervalSince1970) + 12 * 3600
+                  && (claims["sub"] as? String)?.hasPrefix("https://") == true
+                  && (claims["sub"] as? String)?.contains("localhost") == false)
+            let sig = Data(base64URL: parts[2]).flatMap { try? P256.Signing.ECDSASignature(rawRepresentation: $0) }
+            check("push: the JWT signature verifies", sig.map { vapid.publicKey.isValidSignature($0, for: Data((parts[0] + "." + parts[1]).utf8)) } ?? false)
+        } else {
+            check("push: the JWT has three parts", false)
+        }
+
+        // Endpoint allowlist.
+        let good = ["https://web.push.apple.com/QGuQyavXutnMH9IOQkd4R", "https://push.apple.com/x", "https://WEB.Push.Apple.com/x",
+                    "https://fcm.googleapis.com/fcm/send/abc:def", "https://updates.push.services.mozilla.com/wpush/v2/gAAA",
+                    "https://web.push.apple.com:443/x"]
+        let bad = ["https://push.apple.com.evil.test/x", "http://web.push.apple.com/x", "https://evilpush.apple.com/x",
+                   "https://web.push.apple.com:8443/x", "https://user:pw@web.push.apple.com/x", "https://fcm.googleapis.com.evil.test/x",
+                   "https://127.0.0.1/x", "https://[::1]/x", "ftp://web.push.apple.com/x", "https://web.push.apple.com./x",
+                   "https://evil.test#@web.push.apple.com/", "https://evil.test/?.push.apple.com", "web.push.apple.com/x", ""]
+        check("push: known push services are allowed", good.allSatisfy { WebPush.allowedEndpoint($0) != nil })
+        for url in bad { check("push: \(url.isEmpty ? "an empty endpoint" : url) is refused", WebPush.allowedEndpoint(url) == nil) }
+
+        // Delivery rules, through a stand-in transport.
+        let devices = DeviceStore(file: Paths.support.appendingPathComponent("devices-push.json"))
+        let key = P256.Signing.PrivateKey()
+        guard let device = devices.addDevice(name: "Push test", publicKey: key.publicKey.x963Representation.base64URLEncodedString(),
+                                             login: "ada@example.com") else { check("push: test device pairs", false); return }
+        let subscription = PushSubscription(endpoint: "https://web.push.apple.com/QGuQyavXutnMH9IOQkd4R",
+                                            p256dh: phone.publicKey.x963Representation.base64URLEncodedString(),
+                                            auth: phoneAuth.base64URLEncodedString())
+        devices.setSubscription(subscription, for: device.id)
+        push.devicesOverride = devices
+        var answers: [Int?] = []
+        var sent: [URLRequest] = []
+        var delays: [TimeInterval] = []
+        push.transport = { req, done in
+            sent.append(req)
+            let status = answers.isEmpty ? 201 : answers.removeFirst()
+            DispatchQueue.main.async { done(status, status == nil ? URLError(.notConnectedToInternet) : nil) }
+        }
+        push.schedule = { delay, work in delays.append(delay); DispatchQueue.main.async(execute: work) }
+        let msg = WebPush.Message(payload: Data(#"{"body":"secret"}"#.utf8), hiddenPayload: Data(#"{"body":"An agent needs you"}"#.utf8),
+                                  urgency: .high, topic: "AbCdEfGhIjKlMnOpQrStUvWxYz012345")
+        func deliver(_ statuses: [Int?], _ m: WebPush.Message = msg) -> WebPush.Outcome? {
+            answers = statuses; sent = []; delays = []
+            var outcome: WebPush.Outcome?
+            push.send(m, to: device.id) { outcome = $0 }
+            spin { outcome != nil }
+            return outcome
+        }
+        func opened(_ r: URLRequest?) -> String {
+            r?.httpBody.flatMap { try? WebPush.decrypt($0, receiver: phone, auth: phoneAuth) }.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        }
+
+        check("push: 201 is delivered", deliver([201]) == .delivered && sent.count == 1)
+        let r = sent.first
+        let authz = r?.value(forHTTPHeaderField: "Authorization") ?? ""
+        check("push: the request carries VAPID, TTL, urgency, topic and aes128gcm",
+              authz.hasPrefix("vapid t=") && authz.hasSuffix(", k=" + vapid.publicKey.x963Representation.base64URLEncodedString())
+              && r?.value(forHTTPHeaderField: "TTL") == "3600" && r?.value(forHTTPHeaderField: "Urgency") == "high"
+              && r?.value(forHTTPHeaderField: "Topic") == "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+              && r?.value(forHTTPHeaderField: "Content-Encoding") == "aes128gcm" && r?.httpMethod == "POST"
+              && r?.url?.host == "web.push.apple.com")
+        check("push: the push service gets ciphertext the phone can open", opened(r) == #"{"body":"secret"}"#
+              && !(r?.httpBody.map { String(decoding: $0, as: UTF8.self).contains("secret") } ?? true))
+        check("push: 413 resends once with the content hidden", deliver([413, 201]) == .delivered && sent.count == 2
+              && opened(sent.last).contains("An agent needs you"))
+        check("push: 413 twice gives up", deliver([413, 413]) == .failed("The push service refused it (HTTP 413)") && sent.count == 2)
+        check("push: 429 and 5xx retry after 2 and 10 s", deliver([429, 503, 201]) == .delivered && delays == [2, 10] && sent.count == 3)
+        if case .failed? = deliver([500, 500, 500, 500]) {
+            check("push: 5xx gives up after retries at 2, 10 and 60 s", delays == [2, 10, 60] && sent.count == 4)
+        } else {
+            check("push: 5xx gives up after retries at 2, 10 and 60 s", false)
+        }
+        if case .failed? = deliver([403]) { check("push: other refusals aren't retried", sent.count == 1) }
+        else { check("push: other refusals aren't retried", false) }
+
+        // Offline: queued (at most 20, a newer push for the same topic replaces the older), sent when back.
+        push.setOnline(false)
+        for i in 0..<25 {
+            var m = msg
+            m.topic = "topic\(i % 22)"
+            push.send(m, to: device.id)
+        }
+        check("push: offline pushes queue, at most 20 per device", push.queued(for: device.id) == 20)
+        answers = []; sent = []
+        push.setOnline(true)
+        spin { sent.count == 20 }
+        check("push: queued pushes go out when the network is back", sent.count == 20 && push.queued(for: device.id) == 0)
+        check("push: a network error queues the push", deliver([nil]) == .queued && push.queued(for: device.id) == 1)
+        push.resetQueue()
+
+        check("push: 410 forgets the subscription", deliver([410]) == .unsubscribed && devices.device(device.id)?.pushSubscription == nil)
+        check("push: no subscription, no request", deliver([]) == .failed("Notifications are off for this device") && sent.isEmpty)
+        devices.setSubscription(PushSubscription(endpoint: "https://push.apple.com.evil.test/x", p256dh: subscription.p256dh,
+                                                 auth: subscription.auth), for: device.id)
+        if case .failed? = deliver([201]) { check("push: a subscription outside the allowlist is never contacted", sent.isEmpty) }
+        else { check("push: a subscription outside the allowlist is never contacted", false) }
     }
 }
