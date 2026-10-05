@@ -15,6 +15,7 @@ enum Notifier {
 
     /// Removes banners for items that were answered or cleared.
     static func withdraw(_ ids: [String]) {
+        guard !Demo.isOn else { return }
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
     }

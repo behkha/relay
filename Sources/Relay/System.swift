@@ -4,7 +4,10 @@ import AppKit
 enum Paths {
     static let support: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("Relay", isDirectory: true)
+        // Demo mode never touches the real support folder (workspaces, sessions, hooks).
+        let dir = Demo.isOn
+            ? FileManager.default.temporaryDirectory.appendingPathComponent("relay-demo-\(getpid())", isDirectory: true)
+            : base.appendingPathComponent("Relay", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()

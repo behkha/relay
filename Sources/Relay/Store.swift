@@ -480,6 +480,12 @@ final class Store: ObservableObject {
         insert(item)
     }
 
+    /// Demo mode: adds a mock card without notifications or transcript reads.
+    func demoInsert(_ item: InboxItem) {
+        items.append(item)
+        itemArrived.send(item)
+    }
+
     private func insert(_ item: InboxItem) {
         var item = item
         item.prompt = item.prompt ?? sessions[item.sessionId]?.lastPrompt
@@ -550,7 +556,7 @@ final class Store: ObservableObject {
     /// Asks Claude Haiku, on the agent's own account, for the instructions you'd most likely send next.
     /// Called when the card actually shows a finished turn, so unseen cards cost nothing.
     func requestNextSteps(_ itemId: String) {
-        guard nextStepsEnabled, ClaudeCLI.path != nil,
+        guard !Demo.isOn, nextStepsEnabled, ClaudeCLI.path != nil,
               let i = items.firstIndex(where: { $0.id == itemId }), items[i].kind == .finished,
               items[i].nextStepsState == .none,
               let ws = workspace(items[i].workspaceId), ws.loggedIn != false else { return }
@@ -661,6 +667,7 @@ final class Store: ObservableObject {
 
     /// Answers an AskUserQuestion card. `answers` maps question text to the chosen label(s) or free text.
     func answerQuestion(_ item: InboxItem, answers: [String: String]) {
+        if Demo.isOn { finish(item, note: "Answered"); return }
         if let ex = pending.removeValue(forKey: item.id) {
             var input = Self.parseJSON(item.toolInputJSON) ?? [:]
             input["answers"] = answers
@@ -686,6 +693,7 @@ final class Store: ObservableObject {
     }
 
     func answerPermission(_ item: InboxItem, choice: PermissionChoice, feedback: String? = nil) {
+        if Demo.isOn { finish(item, note: choice == .deny ? "Declined" : "Allowed"); return }
         if let ex = pending.removeValue(forKey: item.id) {
             var decision: [String: Any]
             switch choice {

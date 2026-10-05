@@ -17,8 +17,8 @@ so you can stop `⌘-Tab`-ing through 14 terminal tabs like it's 1997.
 
 <br><br>
 
-<!-- Demo slot: replace docs/demo.gif with a screen recording of the pill and inbox card (keeps this path, ~1200px wide). -->
-<img src="docs/demo.gif" alt="Relay demo: agents light up the edge pill, the inbox card opens, an answer goes back to the terminal" width="800">
+<!-- Re-record with scripts/record-demo.sh (scripted demo mode, mock data only). -->
+<img src="docs/demo.gif" alt="Relay demo: an agent asks a question, the inbox card opens, two prompts are answered from the keyboard, a finished turn shows next steps, and the agents list shows one agent on fire at 312% CPU" width="880">
 
 </div>
 

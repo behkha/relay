@@ -34,10 +34,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NSApp.terminate(nil)
             return
         }
-        startHookServer()
-        HeatMonitor.shared.start()
-        store.ensureHooks()
-        store.refreshAllAccounts()
+        if Demo.isOn { Demo.prepareDefaults() }
+        else {
+            startHookServer()
+            HeatMonitor.shared.start()
+            store.ensureHooks()
+            store.refreshAllAccounts()
+        }
 
         voice = VoiceController(store: store, ui: ui)
         remote = RemoteServer(store: store)
@@ -68,6 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             case .quit: NSApp.terminate(nil)
             case .look, .filter: break
             }
+        }
+
+        if Demo.isOn {
+            Demo.run(store: store, ui: ui, overlay: overlay)
+            return
         }
 
         setupStatusItem()
@@ -123,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if Demo.isOn { try? FileManager.default.removeItem(at: Paths.support) }
         store.releaseAll()
         hookServer?.stop()
     }

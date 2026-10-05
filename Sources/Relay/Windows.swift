@@ -158,6 +158,8 @@ final class OverlayController: NSObject {
 
     @objc private func screensChanged() { positionPill(); layoutCard() }
 
+    var pillFrame: NSRect { pill.frame }
+
     func positionPill() {
         guard let screen else { return }
         let vf = screen.visibleFrame
@@ -206,7 +208,7 @@ final class OverlayController: NSObject {
 
     // MARK: Hover
 
-    private func setHover(_ inside: Bool) {
+    func setHover(_ inside: Bool) {
         collapseWork?.cancel()
         if inside {
             if !ui.pillExpanded {

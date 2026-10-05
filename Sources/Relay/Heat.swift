@@ -59,6 +59,9 @@ final class HeatMonitor: ObservableObject {
             .store(in: &bag)
     }
 
+    /// Demo mode: mock readings instead of sampling real processes.
+    func injectDemo(_ values: [String: SessionHeat]) { heat = values }
+
     func start() {
         guard timer == nil else { return }
         tick()
