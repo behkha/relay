@@ -36,7 +36,7 @@ Rules for every task:
   - Deep links `#item=` and `#session=`.
 
   New resources `manifest.webmanifest` and `sw.js` (push: `showNotification` with `data`, `tag` = itemId; notificationclick focuses or opens `/#item=<id>`). PNG icons at 192 and 512 generated in `build.sh` from the iconset. Add every new resource to the `cp` line in `build.sh`. The UI is gated by `caps`.
-- [ ] 10. **Mac settings UI.** In the Phone settings section:
+- [x] 10. **Mac settings UI.** In the Phone settings section:
   - **Remote access (Tailscale)** toggle with step-by-step status and errors from `RemoteAccess`, plus the `https://…ts.net` URL.
   - **Pair a device** sheet with a QR (`QRCode.image`) of `https://<name>[:port]/pair#c=<code>` and a countdown.
   - Paired-device list (name, paired, last seen, notifications on/off) with Revoke and Revoke all.

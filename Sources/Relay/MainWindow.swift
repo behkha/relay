@@ -22,12 +22,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let store: Store
     private let remote: RemoteServer
+    private let access: RemoteAccess
     private let voice: VoiceController
     private let nav = MainNav()
 
-    init(store: Store, remote: RemoteServer, voice: VoiceController) {
+    init(store: Store, remote: RemoteServer, access: RemoteAccess, voice: VoiceController) {
         self.store = store
         self.remote = remote
+        self.access = access
         self.voice = voice
     }
 
@@ -42,7 +44,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             w.isReleasedWhenClosed = false
             w.minSize = NSSize(width: 760, height: 500)
             w.appearance = NSAppearance(named: .darkAqua)
-            w.contentView = NSHostingView(rootView: MainView(store: store, remote: remote, voice: voice, nav: nav))
+            w.contentView = NSHostingView(rootView: MainView(store: store, remote: remote, access: access, voice: voice, nav: nav))
             w.center()
             w.delegate = self
             window = w
@@ -65,6 +67,7 @@ final class MainNav: ObservableObject {
 struct MainView: View {
     @ObservedObject var store: Store
     @ObservedObject var remote: RemoteServer
+    var access: RemoteAccess
     @ObservedObject var voice: VoiceController
     @ObservedObject var nav: MainNav
 
@@ -76,7 +79,7 @@ struct MainView: View {
                 switch nav.tab {
                 case .workspaces: WorkspacesPane(store: store)
                 case .agents: AgentsPane(store: store)
-                case .phone: PhonePane(remote: remote)
+                case .phone: PhonePane(remote: remote, access: access, devices: access.devices, store: store)
                 case .settings: SettingsPane(store: store, voice: voice)
                 }
             }
@@ -876,6 +879,12 @@ private struct CompactLabelStyle: LabelStyle {
 
 struct PhonePane: View {
     @ObservedObject var remote: RemoteServer
+    @ObservedObject var access: RemoteAccess
+    @ObservedObject var devices: DeviceStore
+    @ObservedObject var store: Store
+    @ViewState private var pairing = false
+    @ViewState private var confirmRevokeAll = false
+    @ViewState private var keepAwake = UserDefaults.standard.bool(forKey: "keepAwake")
 
     var body: some View {
         ScrollView {
@@ -905,10 +914,231 @@ struct PhonePane: View {
                         Text(remote.error ?? "Looking for a network address…").font(.system(size: 12)).foregroundStyle(Theme.amber)
                     }
                 }
+
+                anywhere
+                if access.enabled || !devices.active.isEmpty { pairedDevices }
+                if access.enabled { folders }
+                group("Mac sleep") {
+                    Toggle("Keep the Mac awake while agents work", isOn: $keepAwake)
+                        .onChange(of: keepAwake) { UserDefaults.standard.set($0, forKey: "keepAwake") }
+                    note("Holds off idle sleep only while an agent is working or waiting on you, so your phone can still reach it. A closed lid on battery still sleeps.")
+                }
             }
+            .font(.system(size: 12.5))
             .padding(.horizontal, 28).padding(.bottom, 28)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .sheet(isPresented: $pairing) { PairSheet(access: access, devices: devices) }
+        .alert("Revoke every paired device?", isPresented: $confirmRevokeAll) {
+            Button("Revoke all", role: .destructive) { devices.revokeAll() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Each one stops working right away and has to be paired again. Relay also forgets which Tailscale account owns them.")
+        }
+    }
+
+    // MARK: Anywhere (Tailscale)
+
+    private var anywhere: some View {
+        group("Anywhere, over Tailscale") {
+            note("Your phone reaches this Mac through your own tailnet from any network, and gets notifications even when locked. It can answer, start and stop agents. Needs Tailscale on this Mac and your phone, with MagicDNS and HTTPS certificates on.")
+            Toggle("Allow phone access over Tailscale", isOn: Binding(get: { access.enabled }, set: { access.setEnabled($0) }))
+            if access.enabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Tailscale.Step.allCases, id: \.self) { step in stepRow(step) }
+                }
+                .padding(.leading, 2)
+                if let portError = access.portError {
+                    Text(portError).font(.system(size: 12)).foregroundStyle(Color.red.opacity(0.9)).fixedSize(horizontal: false, vertical: true)
+                }
+                if let failure = access.failure {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(failure.message).font(.system(size: 12)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
+                        if let link = failure.link {
+                            Button("Open") { NSWorkspace.shared.open(link) }.buttonStyle(SecondaryButtonStyle())
+                        }
+                    }
+                }
+                if access.funnelOn {
+                    Text("Tailscale Funnel is on for Relay's address, which puts it on the public internet. Relay refuses that traffic; turn Funnel off with `tailscale funnel reset`.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
+                }
+                if let url = access.url {
+                    CopyField(text: url.absoluteString)
+                    HStack(spacing: 8) {
+                        Button { pairing = true } label: { Label("Pair a device…", systemImage: "qrcode") }
+                            .buttonStyle(PrimaryButtonStyle())
+                        Button("Check again") { access.retry() }.buttonStyle(SecondaryButtonStyle())
+                    }
+                } else if !access.busy {
+                    Button("Try again") { access.retry() }.buttonStyle(SecondaryButtonStyle())
+                }
+            }
+        }
+    }
+
+    private func stepRow(_ step: Tailscale.Step) -> some View {
+        let done = access.passed.contains(step)
+        let current = !done && Tailscale.Step.allCases.first { !access.passed.contains($0) } == step
+        let failed = current && !access.busy && (access.failure != nil || access.portError != nil)
+        return HStack(spacing: 8) {
+            Group {
+                if done {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
+                } else if current && access.busy {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                } else if failed {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.amber)
+                } else {
+                    Image(systemName: "circle").foregroundStyle(Theme.textFaint)
+                }
+            }
+            .frame(width: 16, height: 16)
+            Text(step.rawValue).font(.system(size: 12)).foregroundStyle(done ? Color.white.opacity(0.85) : Theme.textDim)
+        }
+    }
+
+    // MARK: Devices
+
+    private var pairedDevices: some View {
+        group("Paired devices") {
+            if devices.active.isEmpty {
+                note("No devices yet. Pair your phone with Pair a device above.")
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(devices.active) { d in
+                        HStack(spacing: 10) {
+                            Image(systemName: "iphone").font(.system(size: 15)).foregroundStyle(Theme.textDim).frame(width: 20)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(d.name).font(.system(size: 13, weight: .medium))
+                                Text(deviceLine(d)).font(.system(size: 11)).foregroundStyle(Theme.textFaint)
+                            }
+                            Spacer()
+                            Button("Revoke") { devices.revoke(d.id) }.buttonStyle(SecondaryButtonStyle())
+                        }
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 9).fill(Theme.row))
+                    }
+                }
+                HStack {
+                    if let owner = devices.ownerLogin { note("Tailscale account: \(owner)") }
+                    Spacer()
+                    Button("Revoke all…") { confirmRevokeAll = true }.buttonStyle(SecondaryButtonStyle())
+                }
+            }
+        }
+    }
+
+    private func deviceLine(_ d: Device) -> String {
+        let paired = d.pairedAt.formatted(date: .abbreviated, time: .omitted)
+        let seen = d.lastSeen.map { "last seen " + shortAgo($0, now: Date()) } ?? "not seen yet"
+        let push = d.pushSubscription == nil ? "notifications off" : "notifications on"
+        return "Paired \(paired) · \(seen) · \(push)"
+    }
+
+    // MARK: Folders
+
+    private var folders: some View {
+        group("Folders the phone can start agents in") {
+            note("Besides the folders your agents ran in, the phone can start agents in these. It can never type a path of its own. Starting from the phone needs tmux (brew install tmux).")
+            ForEach(store.pinnedFolders, id: \.self) { path in
+                HStack(spacing: 8) {
+                    Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Theme.textFaint)
+                    Text((path as NSString).abbreviatingWithTildeInPath).font(.system(size: 12, design: .monospaced))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    IconButton(systemName: "xmark", size: 9.5) { store.pinnedFolders.removeAll { $0 == path } }
+                        .help("Unpin")
+                }
+            }
+            Button { pinFolder() } label: { Label("Pin a folder…", systemImage: "folder.badge.plus") }
+                .buttonStyle(SecondaryButtonStyle())
+        }
+    }
+
+    private func pinFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Pin"
+        guard panel.runModal() == .OK else { return }
+        let added = panel.urls.map(\.path).filter { !store.pinnedFolders.contains($0) }
+        store.pinnedFolders += added
+    }
+
+    // MARK: Pieces
+
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11.5)).foregroundStyle(Theme.textFaint).fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func group<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textFaint)
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.035)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.rowBorder, lineWidth: 1))
+    }
+}
+
+/// The QR code for pairing a phone: a single-use link valid for five minutes.
+struct PairSheet: View {
+    @ObservedObject var access: RemoteAccess
+    @ObservedObject var devices: DeviceStore
+    @Environment(\.dismiss) private var dismiss
+    @ViewState private var link: URL?
+    @ViewState private var pairedBefore = 0
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("Pair a device").font(.system(size: 17, weight: .semibold))
+            Text("Scan this with your phone's Camera. Your phone must be on your tailnet. The code works once, for five minutes, and this Mac asks you before it pairs anything.")
+                .font(.system(size: 12)).foregroundStyle(Theme.textDim).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if let link, devices.pairingExpires != nil, let img = QRCode.image(for: link.absoluteString, size: 230) {
+                Image(nsImage: img).interpolation(.none).resizable().frame(width: 230, height: 230)
+                    .padding(10).background(RoundedRectangle(cornerRadius: 12).fill(Color.white))
+            } else {
+                RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.05)).frame(width: 250, height: 250)
+                    .overlay(Text(devices.pairingExpires == nil ? "Code used or expired" : "No address yet")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textDim))
+            }
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                Text(remaining(at: ctx.date)).font(.system(size: 12, weight: .medium).monospacedDigit()).foregroundStyle(Theme.textDim)
+            }
+            if let link, devices.pairingExpires != nil {
+                CopyField(text: link.absoluteString)
+                Text("Already installed Relay on the Home Screen? Copy the link and paste it in the app (Universal Clipboard works).")
+                    .font(.system(size: 10.5)).foregroundStyle(Theme.textFaint).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button("New code") { link = access.newPairingLink() }.buttonStyle(SecondaryButtonStyle())
+                Spacer()
+                Button("Done") { devices.cancelPairingCode(); dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 400)
+        .preferredColorScheme(.dark)
+        .onAppear {
+            pairedBefore = devices.active.count
+            link = access.newPairingLink()
+        }
+        .onChange(of: devices.active.count) { count in
+            if count > pairedBefore { dismiss() }   // paired: nothing left to scan
+        }
+    }
+
+    private func remaining(at now: Date) -> String {
+        guard let expires = devices.pairingExpires else { return "Make a new code to pair another device." }
+        let left = Int(expires.timeIntervalSince(now).rounded(.up))
+        guard left > 0 else { return "Expired. Make a new code." }
+        return String(format: "Works for %d:%02d", left / 60, left % 60)
     }
 }
 

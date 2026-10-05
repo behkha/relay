@@ -51,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         voice = VoiceController(store: store, ui: ui)
         remote = RemoteServer(store: store)
         access = RemoteAccess(store: store)
-        main = MainWindowController(store: store, remote: remote, voice: voice)
+        main = MainWindowController(store: store, remote: remote, access: access, voice: voice)
         overlay = OverlayController(store: store, ui: ui)
         overlay.onVoice = { [weak self] shot in
             guard let self else { return }
@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         overlay.onVoiceReply = { [weak self] item in self?.voice.start(target: item, screenshot: false) }
         voice.anchor = { [weak self] in self?.overlay.anchorFrame }
         overlay.onHome = { [weak self] in self?.main.show() }
-        overlay.phoneOn = { [weak self] in self?.remote.enabled ?? false }
+        overlay.phoneOn = { [weak self] in (self?.remote.enabled ?? false) || (self?.access.enabled ?? false) }
         overlay.onTalkTo = { [weak self] sessionId in self?.voice.start(sessionId: sessionId) }
         overlay.onSettingsAction = { [weak self] action in
             guard let self else { return }
