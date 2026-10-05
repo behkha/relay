@@ -15,6 +15,11 @@ so you can stop `⌘-Tab`-ing through 14 terminal tabs like it's 1997.
 ![Lines of Swift: ~9k](https://img.shields.io/badge/lines_of_Swift-~9k-blue)
 ![Electron: no](https://img.shields.io/badge/Electron-nope-lightgrey)
 
+<br><br>
+
+<!-- Demo slot: replace docs/demo.gif with a screen recording of the pill and inbox card (keeps this path, ~1200px wide). -->
+<img src="docs/demo.gif" alt="Relay demo: agents light up the edge pill, the inbox card opens, an answer goes back to the terminal" width="800">
+
 </div>
 
 ```text
