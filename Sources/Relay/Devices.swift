@@ -81,7 +81,9 @@ final class DeviceStore: ObservableObject {
 
     static let codeLifetime: TimeInterval = 5 * 60
     static let maxClockSkew: TimeInterval = 60
-    static let replayWindow: TimeInterval = 120
+    /// A signature stays usable for up to twice the clock skew (stamped a minute ahead, used a minute
+    /// late), so it is remembered a little longer than that.
+    static let replayWindow: TimeInterval = 2 * maxClockSkew + 5
     /// More failures than this within a minute starts the cool-down.
     static let failureLimit = 20
     static let coolDown: TimeInterval = 60
@@ -90,8 +92,10 @@ final class DeviceStore: ObservableObject {
     private var code: Data?
     /// Replay cache: hash of each accepted signed message, with when it was seen.
     private var seen: [String: Date] = [:]
-    private var failures: [Date] = []
-    private var coolDownUntil: Date?
+    /// Recent failures and cool-downs per Tailscale login ("" when a request had none), so one
+    /// person on the tailnet can't lock another out of pairing.
+    private var failures: [String: [Date]] = [:]
+    private var coolDownUntil: [String: Date] = [:]
 
     init(file: URL) {
         self.file = file
@@ -121,19 +125,19 @@ final class DeviceStore: ObservableObject {
     }
 
     /// True once for the current code while it is valid; it can't be used again after that.
-    /// Wrong and expired codes count as failures.
-    func consumePairingCode(_ given: String, now: Date = Date()) -> Bool {
-        guard !isCoolingDown(now), let code, let expires = pairingExpires else {
-            recordFailure(now)
+    /// Wrong and expired codes count as failures of `login`.
+    func consumePairingCode(_ given: String, login: String = "", now: Date = Date()) -> Bool {
+        guard !isCoolingDown(now, login: login), let code, let expires = pairingExpires else {
+            recordFailure(now, login: login)
             return false
         }
         if now > expires {
             cancelPairingCode()
-            recordFailure(now)
+            recordFailure(now, login: login)
             return false
         }
         guard Secure.equal(Data(given.utf8), code) else {
-            recordFailure(now)
+            recordFailure(now, login: login)
             return false
         }
         cancelPairingCode()
@@ -168,9 +172,15 @@ final class DeviceStore: ObservableObject {
 
     /// A device name for the Mac's prompt and lists: no control characters, at most 40 characters.
     static func cleanName(_ name: String) -> String {
-        let scalars = name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
-        let t = String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? "Phone" : String(t.prefix(40))
+        let t = printable(name, max: 40)
+        return t.isEmpty ? "Phone" : t
+    }
+
+    /// Text from a request, safe to show on the Mac: no control characters (no line breaks to restyle
+    /// a prompt with), trimmed, at most `max` characters.
+    static func printable(_ s: String, max: Int) -> String {
+        let scalars = s.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        return String(String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines).prefix(max))
     }
 
     static func parseKey(_ base64: String) -> P256.Signing.PublicKey? {
@@ -198,7 +208,7 @@ final class DeviceStore: ObservableObject {
     /// Runs the checks in order and counts a failure toward the cool-down.
     func check(_ req: HTTPRequest, now: Date = Date()) -> Result<Device, Rejection> {
         let result = evaluate(req, now: now)
-        if case .failure = result { recordFailure(now) }
+        if case .failure = result { recordFailure(now, login: req.header("tailscale-user-login") ?? "") }
         return result
     }
 
@@ -238,14 +248,28 @@ final class DeviceStore: ObservableObject {
 
     // MARK: Failures
 
-    func recordFailure(_ now: Date = Date()) {
-        failures = failures.filter { now.timeIntervalSince($0) < 60 } + [now]
-        if failures.count > Self.failureLimit { coolDownUntil = now.addingTimeInterval(Self.coolDown) }
+    /// Only the last `failureLimit + 1` failures of a login matter, so a flood costs constant work per
+    /// request (this runs on the main thread).
+    func recordFailure(_ now: Date = Date(), login: String = "") {
+        var list = failures[login, default: []]
+        list.append(now)
+        if list.count > Self.failureLimit + 1 { list.removeFirst(list.count - Self.failureLimit - 1) }
+        failures[login] = list
+        if list.count > Self.failureLimit, let oldest = list.first, now.timeIntervalSince(oldest) < 60 {
+            coolDownUntil[login] = now.addingTimeInterval(Self.coolDown)
+        }
+        // Logins a local process makes up can't grow this without bound.
+        if failures.count > 64 {
+            failures = failures.filter { $0.key == login || now.timeIntervalSince($0.value.last ?? .distantPast) < 60 }
+            coolDownUntil = coolDownUntil.filter { $0.value > now }
+            if failures.count > 64 { failures = [login: list] }
+        }
     }
 
-    /// During a cool-down the tailnet door turns away everything that isn't signed by a paired device.
-    func isCoolingDown(_ now: Date = Date()) -> Bool {
-        coolDownUntil.map { now < $0 } ?? false
+    /// During a login's cool-down the tailnet door won't pair anything for it. Signed requests from
+    /// paired devices aren't affected, so nobody can lock the owner out of their phone.
+    func isCoolingDown(_ now: Date = Date(), login: String = "") -> Bool {
+        coolDownUntil[login].map { now < $0 } ?? false
     }
 
     // MARK: Changes

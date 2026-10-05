@@ -125,13 +125,18 @@ final class WebPush {
     // MARK: Endpoints
 
     /// Push services Relay will talk to. A paired phone can't make the Mac POST anywhere else.
+    /// The host must be plain ASCII as written (no percent escapes, which `URL.host` would decode).
     static func allowedEndpoint(_ s: String) -> URL? {
-        guard s.count < 2048, let url = URL(string: s), url.scheme?.lowercased() == "https",
-              let host = url.host?.lowercased(), url.user == nil, url.password == nil,
-              url.port == nil || url.port == 443 else { return nil }
-        let ok = host == "push.apple.com" || host.hasSuffix(".push.apple.com")
+        guard s.count < 2048, let parts = URLComponents(string: s), parts.scheme?.lowercased() == "https",
+              let raw = parts.percentEncodedHost, parts.user == nil, parts.password == nil,
+              parts.port == nil || parts.port == 443 else { return nil }
+        let host = raw.lowercased()
+        guard !host.isEmpty, !host.hasPrefix("."), !host.hasSuffix("."), !host.contains(".."),
+              host.allSatisfy({ ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "." || $0 == "-" }) else { return nil }
+        let known = host == "push.apple.com" || host.hasSuffix(".push.apple.com")
             || host == "fcm.googleapis.com" || host == "updates.push.services.mozilla.com"
-        return ok ? url : nil
+        guard known, let url = parts.url, url.host?.lowercased() == host else { return nil }
+        return url
     }
 
     // MARK: Encryption (RFC 8291)
@@ -230,8 +235,12 @@ final class WebPush {
     }
 
     private func attempt(_ message: Message, to deviceId: String, retry: Int, hidden: Bool, completion: ((Outcome) -> Void)?) {
-        guard let sub = devices.device(deviceId)?.pushSubscription else { completion?(.failed("Notifications are off for this device")); return }
+        guard let device = devices.device(deviceId), let sub = device.pushSubscription else {
+            completion?(.failed("Notifications are off for this device")); return
+        }
         guard online else { enqueue(message, for: deviceId); completion?(.queued); return }
+        // Hide content counts as it is now, also for a push that waited offline or is being retried.
+        let hidden = hidden || device.pushPrefs.hideContent
         guard let req = request(hidden ? message.hiddenPayload : message.payload, to: sub,
                                 urgency: message.urgency, topic: message.topic) else {
             completion?(.failed("This device's push subscription isn't usable")); return

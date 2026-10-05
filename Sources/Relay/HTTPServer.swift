@@ -56,6 +56,12 @@ final class HTTPServer {
     var acceptPeer: ((String?) -> Bool)?
     /// Headers added to every response (a response's own headers win).
     var defaultHeaders: [String: String] = [:]
+    /// At most this many connections at once; more are closed right away (nil: no limit).
+    /// Each one holds a file descriptor, and the app shares its limit with everything else.
+    var maxConnections: Int?
+    /// Connections that haven't sent a whole request after this long are dropped.
+    var requestTimeout: TimeInterval = 30
+    private var openConnections = 0   // touched only on `queue`
     private(set) var port: UInt16 = 0
 
     init(label: String, localOnly: Bool, maxBody: Int = 32 << 20, handler: @escaping Handler) {
@@ -153,12 +159,29 @@ final class HTTPServer {
             conn.cancel()
             return
         }
+        if let maxConnections {
+            guard openConnections < maxConnections else { conn.cancel(); return }
+            openConnections += 1
+            let counted = ParsedFlag()
+            conn.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .cancelled, .failed:
+                    guard !counted.value else { return }
+                    counted.value = true
+                    self?.openConnections -= 1
+                default: break
+                }
+            }
+        }
         conn.start(queue: queue)
         // Drop connections that never finish sending a request.
         let parsed = ParsedFlag()
-        queue.asyncAfter(deadline: .now() + 30) { if !parsed.value { conn.cancel() } }
+        queue.asyncAfter(deadline: .now() + requestTimeout) { if !parsed.value { conn.cancel() } }
         receive(conn, buffer: Data(), parsed: parsed)
     }
+
+    /// Connections open right now (only counted with `maxConnections`). Call on any thread.
+    var connectionCount: Int { queue.sync { openConnections } }
 
     private final class ParsedFlag { var value = false }
 
@@ -274,6 +297,8 @@ final class HTTPServer {
         case 401: return "Unauthorized"
         case 403: return "Forbidden"
         case 404: return "Not Found"
+        case 421: return "Misdirected Request"
+        case 429: return "Too Many Requests"
         default: return "Status"
         }
     }

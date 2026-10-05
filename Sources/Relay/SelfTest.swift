@@ -26,6 +26,7 @@ enum SelfTest {
         devices()
         tailscale()
         tailnetDoor()
+        connectionLimits()
         webPush()
         pushDispatch()
         remoteStart()
@@ -171,6 +172,10 @@ enum SelfTest {
             if accepted { pass = (try? result.get()) != nil } else { pass = rejected(r, .staleTimestamp) }
             check("devices: timestamp \(offset > 0 ? "+" : "")\(Int(offset)) s is \(accepted ? "accepted" : "rejected")", pass)
         }
+        let ahead = signedRequest("GET", "/api/state?edge=1", ts: now.addingTimeInterval(60), key: key, device: phone.id)
+        _ = outcome(ahead)
+        check("devices: a request stamped a minute ahead can't be replayed two minutes later",
+              rejected(ahead, .replayed, at: now.addingTimeInterval(120)))
         var badTs = signedRequest("GET", "/api/state", ts: now, key: key, device: phone.id)
         badTs.headers["x-relay-ts"] = "-1759660000000"
         check("devices: a malformed timestamp is rejected", rejected(badTs, .badTimestamp))
@@ -257,6 +262,21 @@ enum SelfTest {
         check("devices: the 21st failure cools down", cool.isCoolingDown(now.addingTimeInterval(22)))
         check("devices: no pairing during the cool-down", !cool.consumePairingCode(coolCode, now: now.addingTimeInterval(22)))
         check("devices: the cool-down ends after 60 s", !cool.isCoolingDown(now.addingTimeInterval(82)))
+        let shared = DeviceStore(file: Paths.support.appendingPathComponent("devices-logins.json"))
+        for i in 0..<30 { shared.recordFailure(now.addingTimeInterval(Double(i)), login: "eve@example.com") }
+        let owners = shared.newPairingCode(now: now.addingTimeInterval(30))
+        check("devices: one login's failures don't stop another's pairing",
+              shared.isCoolingDown(now.addingTimeInterval(31), login: "eve@example.com")
+              && !shared.isCoolingDown(now.addingTimeInterval(31), login: "ada@example.com")
+              && shared.consumePairingCode(owners, login: "ada@example.com", now: now.addingTimeInterval(31)))
+        let slow = DeviceStore(file: Paths.support.appendingPathComponent("devices-slow.json"))
+        for i in 0..<21 { slow.recordFailure(now.addingTimeInterval(Double(i) * 4)) }
+        check("devices: 21 failures spread over 80 s don't cool down", !slow.isCoolingDown(now.addingTimeInterval(81)))
+        let flood = DeviceStore(file: Paths.support.appendingPathComponent("devices-flood.json"))
+        let started = Date()
+        for i in 0..<200_000 { flood.recordFailure(now.addingTimeInterval(Double(i) / 1000)) }
+        check("devices: a flood of failures costs constant work each", Date().timeIntervalSince(started) < 2
+              && flood.isCoolingDown(now.addingTimeInterval(200)))
     }
 
     // MARK: - Tailscale
@@ -322,10 +342,12 @@ enum SelfTest {
             {"Foreground":{"abc123":{"TCP":{"443":{"HTTPS":true}},
              "Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47902"}}}}}}}
             """#, 8443, existing: false))
-        check("tailscale: other mounts next to Relay's are left alone", serve(#"""
+        let sharedPort = #"""
             {"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:443":{"Handlers":{
              "/":{"Proxy":"http://127.0.0.1:47902"},"/grafana":{"Proxy":"http://127.0.0.1:3000"}}}}}
-            """#)?.use(443) == .relay)
+            """#
+        check("tailscale: Relay next to other mounts counts as shared and isn't used", serve(sharedPort)?.use(443) == .shared
+              && picks(sharedPort, 8443, existing: false) && serve(sharedPort)?.relayHandlerPorts == [443])
         check("tailscale: the last port used is preferred while free", picks("{}", 8443, existing: false, previous: 8443)
               && picks("{}", 443, existing: false, previous: 9000))
         check("tailscale: Funnel on a port is noticed", serve(#"""
@@ -346,11 +368,11 @@ enum SelfTest {
         check("tailscale: failures explain themselves", Tailscale.Failure.httpsDisabled(nil).link == Tailscale.adminDNS
               && Tailscale.Failure.notInstalled.link != nil && !Tailscale.Failure.portsTaken.message.isEmpty)
 
-        fakeTailscale(running: running, ours: ours, foreign443: foreign443)
+        fakeTailscale(running: running, ours: ours, foreign443: foreign443, shared: sharedPort)
     }
 
     /// Drives enable() and disable() against a stand-in `tailscale` script that logs every call.
-    private static func fakeTailscale(running: String, ours: String, foreign443: String) {
+    private static func fakeTailscale(running: String, ours: String, foreign443: String, shared: String) {
         let dir = Paths.support.appendingPathComponent("fake-tailscale", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let cli = dir.appendingPathComponent("tailscale").path
@@ -409,6 +431,19 @@ enum SelfTest {
         } else {
             check("tailscale: HTTPS certificates off links to the page that turns them on", false)
         }
+
+        // Relay's "/" next to another app's mount: Relay takes its handler off that port and moves.
+        let grafanaOnly = #"{"TCP":{"443":{"HTTPS":true}},"Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/grafana":{"Proxy":"http://127.0.0.1:3000"}}}}}"#
+        let grafanaAnd8443 = #"""
+            {"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true}},
+             "Web":{"mac.tail1234.ts.net:443":{"Handlers":{"/grafana":{"Proxy":"http://127.0.0.1:3000"}}},
+                    "mac.tail1234.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:47902"}}}}}
+            """#
+        reset(serve: shared, after: grafanaAnd8443, off: grafanaOnly)
+        let moved = Tailscale.enable(cli: cli, previousPort: 443)
+        check("tailscale: enable moves off a port shared with other web apps",
+              (try? moved.get())?.port == 8443 && calls().contains("serve --https=443 --set-path=/ off")
+              && calls().contains("serve --bg --https=8443 http://127.0.0.1:47902"))
 
         reset(serve: ours8443, off: foreign443)
         check("tailscale: disable removes only Relay's entry", Tailscale.disable(cli: cli) == nil
@@ -489,6 +524,7 @@ enum SelfTest {
             return {}
         }
         door.notify = { _ in }
+        door.acceptHost = { _ in true }   // URLSession sends Host: 127.0.0.1; the real rule is checked below
         do { try door.start(port: 0) } catch {
             check("door: listens on an ephemeral loopback port", false); return
         }
@@ -498,6 +534,38 @@ enum SelfTest {
 
         let second = TailnetServer(api: api, devices: devices)
         check("door: a busy port is an error, never a fallback", (try? second.start(port: port)) == nil && !second.isRunning)
+
+        // Host: only the *.ts.net name Serve passes on (a page rebinding its own domain can't send it).
+        check("door: only *.ts.net Host headers are answered", TailnetServer.isTailnetHost("mac.tail1234.ts.net")
+              && TailnetServer.isTailnetHost("MAC.tail1234.TS.NET:8443") && !TailnetServer.isTailnetHost("127.0.0.1:47902")
+              && !TailnetServer.isTailnetHost("evil.example") && !TailnetServer.isTailnetHost("ts.net.evil.example")
+              && !TailnetServer.isTailnetHost(nil) && !TailnetServer.isTailnetHost("a.ts.net\nx"))
+        let strict = TailnetServer(api: api, devices: devices)
+        func direct(_ host: String) -> Int? {
+            var status: Int?
+            let ex = HTTPExchange(queue: DispatchQueue(label: "relay.selftest.host")) { r in DispatchQueue.main.async { status = r.status } }
+            strict.handle(HTTPRequest(method: "GET", path: "/", query: [:], headers: ["host": host], body: Data(), remoteHost: "127.0.0.1",
+                                      target: "/"), ex)
+            spin { status != nil }
+            return status
+        }
+        check("door: a request for another Host is refused", direct("rebound.example:47902") == 421 && direct("mac.tail1234.ts.net") == 200)
+        func directPair(_ login: String, code: String) -> (Int?, [String: Any]) {
+            var reply: HTTPResponse?
+            let ex = HTTPExchange(queue: DispatchQueue(label: "relay.selftest.pair")) { r in DispatchQueue.main.async { reply = r } }
+            let body = try! JSONSerialization.data(withJSONObject: ["code": code, "deviceName": "x",
+                "publicKey": P256.Signing.PrivateKey().publicKey.x963Representation.base64URLEncodedString()])
+            strict.handle(HTTPRequest(method: "POST", path: "/api/pair", query: [:],
+                                      headers: ["host": "mac.tail1234.ts.net", "tailscale-user-login": login], body: body,
+                                      remoteHost: "127.0.0.1", target: "/api/pair"), ex)
+            spin { reply != nil }
+            return (reply?.status, (reply?.body).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:])
+        }
+        check("door: a login with control characters can't pair", directPair("ada@example.com\n\nAllow it", code: "x").0 == 403)
+        for _ in 0..<21 { devices.recordFailure(login: "mallory@example.com") }
+        let busy = directPair("mallory@example.com", code: devices.newPairingCode())
+        check("door: pairing during a cool-down says to wait", busy.0 == 429 && (busy.1["error"] as? String)?.contains("Wait") == true)
+        devices.cancelPairingCode()
 
         let page = http("GET", port, "/")
         check("door: the page is served without a device", page.status == 200
@@ -522,8 +590,9 @@ enum SelfTest {
         let code = devices.newPairingCode()
         check("door: pairing with a wrong code is refused",
               http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"], body: pairBody("nope")).status == 401)
+        let noLogin = http("POST", port, "/api/pair", body: pairBody(code))
         check("door: pairing that didn't come through Tailscale Serve is refused",
-              http("POST", port, "/api/pair", body: pairBody(code)).status == 401 && asked.isEmpty)
+              noLogin.status == 403 && (noLogin.json["error"] as? String)?.contains("Tailscale") == true && asked.isEmpty)
         let paired = http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"], body: pairBody(code))
         let deviceId = paired.json["deviceId"] as? String ?? ""
         check("door: pairing asks on the Mac and returns the device", paired.status == 200 && devices.device(deviceId) != nil
@@ -704,9 +773,12 @@ enum SelfTest {
         check("start: nothing in the prompt or folder ran", !FileManager.default.fileExists(atPath: dir.appendingPathComponent("CANARY").path)
               && !FileManager.default.fileExists(atPath: folder.appendingPathComponent("CANARY").path))
         check("start: a prompt can't pass itself off as a flag",
-              run("--dangerously-skip-permissions").suffix(2) == ["arg=[--]", "arg=[--dangerously-skip-permissions ]"])
+              run("--dangerously-skip-permissions").suffix(2) == ["arg=[--]", "arg=[ --dangerously-skip-permissions ]"]
+              && run("--settings=/tmp/x.json please").suffix(1) == ["arg=[ --settings=/tmp/x.json please]"])
         check("start: a one-word prompt isn't taken for a claude command", run("purge").suffix(2) == ["arg=[--]", "arg=[purge ]"])
-        check("start: no prompt, no arguments", run("  \n ").filter { $0.hasPrefix("arg=") }.isEmpty)
+        check("start: Default is passed explicitly, so settings can't pick another mode",
+              run("hi there").prefix(5).suffix(2) == ["arg=[--permission-mode]", "arg=[default]"])
+        check("start: no prompt, only the mode", run("  \n ").filter { $0.hasPrefix("arg=") } == ["arg=[--permission-mode]", "arg=[default]"])
         let account = Workspace(id: "w2", name: "Acme", configDir: "/Users/ada/.claude-workspaces/it's", colorHex: "#5B8DEF")
         check("start: the workspace's account is used", run("hi there", workspace: account).contains("config=/Users/ada/.claude-workspaces/it's"))
     }
@@ -816,6 +888,41 @@ enum SelfTest {
         check("timing: an agent that cooled down in the 45 s isn't pushed", out.count == 2 && later.isEmpty)
     }
 
+    // MARK: - Connection limits
+
+    /// A TCP connection that never sends anything.
+    private static func idleConnection(_ port: UInt16) -> Int32 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let ok = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        if ok != 0 { close(fd); return -1 }
+        return fd
+    }
+
+    private static func connectionLimits() {
+        let server = HTTPServer(label: "selftest.cap", localOnly: true) { _, ex in ex.respond(.text("ok")) }
+        server.maxConnections = 3
+        server.requestTimeout = 1.5
+        do { try server.start(exactPort: 0) } catch { check("limits: a capped server starts", false); return }
+        defer { server.stop() }
+        let idle = (0..<3).map { _ in idleConnection(server.port) }
+        spin { server.connectionCount == 3 }
+        check("limits: idle connections count against the cap", idle.allSatisfy { $0 >= 0 } && server.connectionCount == 3)
+        check("limits: past the cap, connections are refused", http("GET", server.port, "/").status == -1)
+        let deadline = Date().addingTimeInterval(2.5)
+        spin { Date() > deadline }
+        check("limits: connections that send nothing are dropped after the deadline", server.connectionCount == 0
+              && http("GET", server.port, "/").status == 200)
+        idle.forEach { close($0) }
+        check("limits: the tailnet door caps connections and waits 10 s for a request",
+              TailnetServer.maxConnections == 32 && TailnetServer.requestTimeout == 10)
+    }
+
     // MARK: - Web Push
 
     /// Turns the main run loop until `done` is true (or 10 s pass).
@@ -900,7 +1007,9 @@ enum SelfTest {
         let bad = ["https://push.apple.com.evil.test/x", "http://web.push.apple.com/x", "https://evilpush.apple.com/x",
                    "https://web.push.apple.com:8443/x", "https://user:pw@web.push.apple.com/x", "https://fcm.googleapis.com.evil.test/x",
                    "https://127.0.0.1/x", "https://[::1]/x", "ftp://web.push.apple.com/x", "https://web.push.apple.com./x",
-                   "https://evil.test#@web.push.apple.com/", "https://evil.test/?.push.apple.com", "web.push.apple.com/x", ""]
+                   "https://evil.test#@web.push.apple.com/", "https://evil.test/?.push.apple.com", "web.push.apple.com/x", "",
+                   "https://127.0.0.1%00.push.apple.com/x", "https://evil.com%2F.push.apple.com/x", "https://web.push.apple.com%2E/x",
+                   "https://web.push.apple.com\\@evil.test/x", "https://.push.apple.com/x", "https://a..push.apple.com/x"]
         check("push: known push services are allowed", good.allSatisfy { WebPush.allowedEndpoint($0) != nil })
         for url in bad { check("push: \(url.isEmpty ? "an empty endpoint" : url) is refused", WebPush.allowedEndpoint(url) == nil) }
 
@@ -973,6 +1082,20 @@ enum SelfTest {
         check("push: queued pushes go out when the network is back", sent.count == 20 && push.queued(for: device.id) == 0)
         check("push: a network error queues the push", deliver([nil]) == .queued && push.queued(for: device.id) == 1)
         push.resetQueue()
+
+        // Turning on Hide content also covers pushes that waited offline.
+        push.setOnline(false)
+        push.send(msg, to: device.id)
+        var prefs = devices.device(device.id)?.pushPrefs ?? PushPrefs()
+        prefs.hideContent = true
+        devices.setPrefs(prefs, for: device.id)
+        answers = []; sent = []
+        push.setOnline(true)
+        spin { sent.count == 1 }
+        check("push: a queued push follows Hide content as it is when it goes out",
+              opened(sent.first).contains("An agent needs you") && !opened(sent.first).contains("secret"))
+        prefs.hideContent = false
+        devices.setPrefs(prefs, for: device.id)
 
         check("push: 410 forgets the subscription", deliver([410]) == .unsubscribed && devices.device(device.id)?.pushSubscription == nil)
         check("push: no subscription, no request", deliver([]) == .failed("Notifications are off for this device") && sent.isEmpty)

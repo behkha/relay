@@ -126,7 +126,8 @@ enum Tailscale {
 
     enum PortUse: Equatable {
         case free
-        case relay      // HTTPS, and "/" proxies to Relay's port
+        case relay      // HTTPS, and Relay's "/" handler is the only thing on it
+        case shared     // Relay's "/" next to other mounts: one origin with other web apps, so not used
         case other      // anything else: another app, a TCP forward, a foreground `serve`
     }
 
@@ -137,6 +138,8 @@ enum Tailscale {
 
         func use(_ port: UInt16) -> PortUse { ports[port] ?? .free }
         var relayPorts: [UInt16] { ports.filter { $0.value == .relay }.map(\.key).sorted() }
+        /// Ports with Relay's "/" handler at all (what turning off removes).
+        var relayHandlerPorts: [UInt16] { ports.filter { $0.value == .relay || $0.value == .shared }.map(\.key).sorted() }
     }
 
     /// Parses `tailscale serve status --json` (a raw ServeConfig; "{}" or "null" when nothing is served).
@@ -160,12 +163,14 @@ enum Tailscale {
             let handler = tcp[String(p)] as? [String: Any] ?? [:]
             let https = handler["HTTPS"] as? Bool ?? false
             let forwards = !(handler["TCPForward"] as? String ?? "").isEmpty
-            // The "/" handler of each host on this port; other mounts on the port are left alone.
-            let targets = web.filter { port(ofHostPort: $0.key) == p }.compactMap { entry -> String? in
-                let handlers = (entry.value as? [String: Any])?["Handlers"] as? [String: Any] ?? [:]
-                return (handlers["/"] as? [String: Any])?["Proxy"] as? String
+            // Every host on this port must have Relay's "/" handler. Other mounts next to it would share the
+            // page's origin, and so the phone's stored key; that port counts as shared and isn't used.
+            let entries = web.filter { port(ofHostPort: $0.key) == p }.map {
+                ($0.value as? [String: Any])?["Handlers"] as? [String: Any] ?? [:]
             }
-            status.ports[p] = https && !forwards && !targets.isEmpty && targets.allSatisfy(isRelayTarget) ? .relay : .other
+            let roots = entries.compactMap { ($0["/"] as? [String: Any])?["Proxy"] as? String }
+            let ours = https && !forwards && !roots.isEmpty && roots.count == entries.count && roots.allSatisfy(isRelayTarget)
+            status.ports[p] = !ours ? .other : entries.allSatisfy { $0.count == 1 } ? .relay : .shared
         }
         for (key, value) in root["AllowFunnel"] as? [String: Any] ?? [:] where value as? Bool == true {
             if let p = port(ofHostPort: key) { status.funnel.insert(p) }
@@ -251,10 +256,22 @@ enum Tailscale {
         guard let name = status.dnsName else { return .failure(.noName) }
         progress(.name)
 
-        let serve: ServeStatus
+        var serve: ServeStatus
         switch serveStatus(cli: cli) {
         case .failure(let f): return .failure(f)
         case .success(let s): serve = s
+        }
+        // Relay's handler next to other apps' mounts: take it off that port (only Relay's handler).
+        let shared = serve.ports.filter { $0.value == .shared }.map(\.key).sorted()
+        if !shared.isEmpty {
+            for p in shared {
+                let r = run(cli, ["serve", "--https=\(p)", "--set-path=/", "off"])
+                if r.status != 0 { return .failure(.command(complaint(r))) }
+            }
+            switch serveStatus(cli: cli) {
+            case .failure(let f): return .failure(f)
+            case .success(let s): serve = s
+            }
         }
         let choice: (port: UInt16, existing: Bool)
         switch choosePort(serve, previous: previousPort) {
@@ -290,7 +307,7 @@ enum Tailscale {
         case .failure(let f): return f
         case .success(let s): serve = s
         }
-        for p in serve.relayPorts {
+        for p in serve.relayHandlerPorts {
             let r = run(cli, ["serve", "--https=\(p)", "--set-path=/", "off"])
             if r.status != 0 { return .command(complaint(r)) }
         }

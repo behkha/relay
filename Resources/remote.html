@@ -1057,8 +1057,9 @@ async function pairNow() {
   }
   // Every answer after the code check uses the code up.
   history.replaceState(null, '', '/pair');
-  showPair(null, r.status === 401 ? 'This pairing code expired or was already used. Make a new one on the Mac and scan it again.'
-                                  : (j.error || (r.status === 403 ? 'Not allowed on the Mac.' : 'Pairing failed (' + r.status + ').')));
+  showPair(null, r.status === 401
+    ? 'This pairing code expired or was already used. If your Mac is asking to pair a device whose code isn\'t ' + fp + ', click Deny. Then make a new code and scan it again.'
+    : (j.error || (r.status === 403 ? 'Not allowed on the Mac.' : 'Pairing failed (' + r.status + ').')));
 }
 
 async function copyPairLink() {

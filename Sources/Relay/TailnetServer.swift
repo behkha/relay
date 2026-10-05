@@ -15,6 +15,12 @@ final class TailnetServer {
                          _ done: @escaping (Bool) -> Void) -> (() -> Void) = PairingPrompt.ask
     /// Shows a short message on the Mac.
     var notify: (String) -> Void = { Store.shared.showToast($0) }
+    /// Which Host headers to answer (a seam for the self-tests, which talk to 127.0.0.1 directly).
+    var acceptHost: (String?) -> Bool = TailnetServer.isTailnetHost
+    /// Connections at once, and how long one may take to send its request. Serve opens one
+    /// connection per request, so this caps what anyone on the tailnet can hold open.
+    static let maxConnections = 32
+    static let requestTimeout: TimeInterval = 10
 
     init(api: RemoteAPI, devices: DeviceStore) {
         self.api = api
@@ -33,6 +39,8 @@ final class TailnetServer {
         }
         s.acceptPeer = { TailnetServer.isLoopback($0) }
         s.defaultHeaders = Self.securityHeaders
+        s.maxConnections = Self.maxConnections
+        s.requestTimeout = Self.requestTimeout
         try s.start(exactPort: port)
         server = s
     }
@@ -40,13 +48,24 @@ final class TailnetServer {
     func stop() {
         server?.stop()
         server = nil
+        PairingPrompt.withdrawAll()
     }
+
+    var connectionCount: Int { server?.connectionCount ?? 0 }
 
     static func isLoopback(_ host: String?) -> Bool {
         guard var h = host?.lowercased() else { return false }
         if let pct = h.firstIndex(of: "%") { h = String(h[..<pct]) }
         if h.hasPrefix("::ffff:") { h = String(h.dropFirst(7)) }
         return h == "::1" || h.hasPrefix("127.")
+    }
+
+    /// Serve passes on the name the phone used, which is always a *.ts.net name. A web page in a
+    /// browser on this Mac that rebinds its own domain to 127.0.0.1 can't send that Host.
+    static func isTailnetHost(_ host: String?) -> Bool {
+        guard var h = host?.lowercased().trimmingCharacters(in: .whitespaces), !h.isEmpty else { return false }
+        if let colon = h.lastIndex(of: ":"), h[h.index(after: colon)...].allSatisfy(\.isNumber) { h = String(h[..<colon]) }
+        return h.hasSuffix(".ts.net") && h.allSatisfy { ($0.isASCII && ($0.isLetter || $0.isNumber)) || $0 == "." || $0 == "-" }
     }
 
     /// Every response: nothing runs inline, only this origin is contacted, nothing may frame it.
@@ -90,6 +109,7 @@ final class TailnetServer {
     func handle(_ req: HTTPRequest, _ ex: HTTPExchange) {
         // Funnel would put this on the public internet. Relay never answers it.
         if req.header("tailscale-funnel-request") != nil { ex.respond(.text("forbidden", status: 403)); return }
+        guard acceptHost(req.header("host")) else { ex.respond(.text("misdirected request", status: 421)); return }
         switch (req.method, req.path) {
         case ("GET", "/"):
             ex.respond(Self.page(RemoteAPI.page()))
@@ -145,9 +165,19 @@ final class TailnetServer {
         let name = DeviceStore.cleanName(body["deviceName"] as? String ?? "")
         let login = req.header("tailscale-user-login") ?? ""
         DispatchQueue.main.async {
-            // Without the login, the request didn't come through Tailscale Serve.
-            guard !login.isEmpty else { self.devices.recordFailure(); ex.respond(.unauthorized); return }
-            guard self.devices.consumePairingCode(code) else { ex.respond(.unauthorized); return }
+            // Without the login, the request didn't come through Tailscale Serve as a signed-in person
+            // (Serve gives tagged devices no identity). The code stays valid.
+            guard !login.isEmpty, login.count <= 254,
+                  !login.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                self.devices.recordFailure()
+                ex.respond(.json(["ok": false, "error": "Relay pairs devices that reach it through Tailscale as a signed-in user. Tagged devices can't pair."], status: 403))
+                return
+            }
+            guard !self.devices.isCoolingDown(login: login) else {
+                ex.respond(.json(["ok": false, "error": "Too many failed attempts from this Tailscale account. Wait a minute, then make a new code."], status: 429))
+                return
+            }
+            guard self.devices.consumePairingCode(code, login: login) else { ex.respond(.unauthorized); return }
             switch self.devices.pairingProblem(publicKey: publicKey, login: login) {
             case .badKey?:
                 ex.respond(.json(["ok": false, "error": "This browser's key isn't valid. Reload and try again."], status: 400))
@@ -160,8 +190,9 @@ final class TailnetServer {
             }
             let fingerprint = Self.fingerprint(publicKey)
             let withdraw = self.confirmPairing(name, login, fingerprint) { allowed in
-                // The phone may have given up while the question was up; then nothing is stored.
-                guard allowed, !ex.isFinished,
+                // The phone may have given up, or remote access was turned off, while the question was up;
+                // then nothing is stored.
+                guard allowed, !ex.isFinished, self.isRunning,
                       let device = self.devices.addDevice(name: name, publicKey: publicKey, login: login) else {
                     ex.respond(.json(["ok": false, "error": "Not allowed on the Mac."], status: 403))
                     return
@@ -183,40 +214,58 @@ final class TailnetServer {
 }
 
 /// The Mac's question for a pairing request. Being at the Mac is what makes a leaked code useless.
+/// It's a floating alert window, not a modal session: a modal loop started from a main-queue block
+/// would hold up every other main-queue block (hooks, the API) until it was answered.
 enum PairingPrompt {
-    private final class State {
-        var running = false
-        var withdrawn = false
+    private final class Prompt: NSObject {
+        let alert = NSAlert()
+        var done: ((Bool) -> Void)?
+
+        @objc func allow() { finish(true) }
+        @objc func deny() { finish(false) }
+
+        func finish(_ allowed: Bool) {
+            guard let done else { return }
+            self.done = nil
+            alert.window.orderOut(nil)
+            PairingPrompt.open.removeAll { $0 === self }
+            done(allowed)
+        }
     }
 
-    static func ask(name: String, login: String, fingerprint: String, done: @escaping (Bool) -> Void) -> () -> Void {
-        let state = State()
-        DispatchQueue.main.async {
-            guard !state.withdrawn else { done(false); return }
-            let alert = NSAlert()
-            alert.messageText = "Pair “\(name)” with Relay?"
-            alert.informativeText = """
-            \(login) via Tailscale wants to use your agents from this device: answer them, start new ones and stop them.
+    private static var open: [Prompt] = []
 
-            Check that the device shows \(fingerprint). Allow it only if you just scanned the pairing code yourself.
-            """
-            // Deny is the default, so Return never pairs anything by accident.
-            alert.addButton(withTitle: "Deny")
-            alert.addButton(withTitle: "Allow")
-            alert.alertStyle = .warning
-            alert.window.level = .floating
-            let timeout = Timer(timeInterval: 120, repeats: false) { _ in if state.running { NSApp.abortModal() } }
-            RunLoop.main.add(timeout, forMode: .common)
-            NSApp.activate(ignoringOtherApps: true)
-            state.running = true
-            let response = alert.runModal()
-            state.running = false
-            timeout.invalidate()
-            done(response == .alertSecondButtonReturn)
-        }
-        return {
-            if state.running { NSApp.abortModal() } else { state.withdrawn = true }
-        }
+    static func ask(name: String, login: String, fingerprint: String, done: @escaping (Bool) -> Void) -> () -> Void {
+        let prompt = Prompt()
+        prompt.done = done
+        open.append(prompt)
+        let alert = prompt.alert
+        alert.messageText = "Pair “\(name)” with Relay?"
+        alert.informativeText = """
+        \(DeviceStore.printable(login, max: 120)) via Tailscale wants to use your agents from this device: answer them, start new ones and stop them.
+
+        Check that the device shows \(fingerprint). Allow it only if you just scanned the pairing code yourself.
+        """
+        // Deny is the default, so Return never pairs anything by accident.
+        let deny = alert.addButton(withTitle: "Deny")
+        deny.target = prompt
+        deny.action = #selector(Prompt.deny)
+        let allow = alert.addButton(withTitle: "Allow")
+        allow.target = prompt
+        allow.action = #selector(Prompt.allow)
+        alert.alertStyle = .warning
+        alert.layout()
+        alert.window.level = .floating
+        alert.window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { prompt.finish(false) }
+        return { prompt.finish(false) }
+    }
+
+    /// Answers every open question with Deny (remote access was turned off).
+    static func withdrawAll() {
+        open.forEach { $0.finish(false) }
     }
 }
 

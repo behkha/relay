@@ -58,6 +58,7 @@ enum Launcher {
     /// Starts Claude Code in a new detached tmux session `relay-<launchId>`. Its hooks report
     /// RELAY_LAUNCH_ID, which turns the phone's "Starting…" row into the real agent. Call off main.
     static func newDetachedTmux(workspace ws: Workspace, folder: String, prompt: String, mode: String) -> Result<String, LaunchError> {
+        guard phoneModes.contains(mode) else { return .failure(.failed("unknown permission mode")) }
         guard let tmux = Proc.which("tmux") else { return .failure(.noTmux) }
         let id = Secure.randomBytes(8).hexString
         let script = detachedScript(workspace: ws, folder: folder, prompt: prompt, mode: mode, launchId: id,
@@ -78,16 +79,22 @@ enum Launcher {
     }
 
     /// The POSIX sh script the pane runs. Every outside string is single-quoted with `Shell.quote`:
-    /// the folder (cd'd into here rather than passed to tmux) and the prompt, which follows `--` so it
-    /// can't pass itself off as a flag. A one-word prompt gets a trailing space so Claude Code doesn't
+    /// the folder (cd'd into here rather than passed to tmux) and the prompt.
+    ///
+    /// The mode is always passed, even "default", so a `permissions.defaultMode` in some settings file
+    /// can't start the agent in another mode. The prompt follows `--` and never starts with "-", so it
+    /// can't pass itself off as a flag; a one-word prompt gets a trailing space so Claude Code doesn't
     /// take it for one of its commands (`claude purge`, `claude update`). If claude exits within 30 s
     /// (not signed in, folder gone…), the pane stays open 2 minutes so Relay can show what it said.
     static func detachedScript(workspace ws: Workspace, folder: String, prompt: String, mode: String,
                                launchId: String, claude: String) -> String {
-        var command = "\(ws.envPrefix) RELAY_LAUNCH_ID=\(launchId) \(claude)"
-        if mode != "default" { command += " --permission-mode \(mode)" }
-        let p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !p.isEmpty { command += " -- " + Shell.quote(p.contains(where: \.isWhitespace) ? p : p + " ") }
+        var command = "\(ws.envPrefix) RELAY_LAUNCH_ID=\(launchId) \(claude) --permission-mode \(Shell.quote(mode))"
+        var p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !p.isEmpty {
+            if !p.contains(where: \.isWhitespace) { p += " " }
+            if p.hasPrefix("-") { p = " " + p }
+            command += " -- " + Shell.quote(p)
+        }
         return [
             "cd \(Shell.quote(folder)) || { echo \"[relay] Couldn't open the folder\"; sleep 120; exit 1; }",
             "t=$(date +%s)",
