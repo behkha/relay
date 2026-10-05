@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         else {
             startHookServer()
             HeatMonitor.shared.start()
+            PowerAssertion.shared.start(store: store)
             store.ensureHooks()
             store.refreshAllAccounts()
         }

@@ -920,7 +920,10 @@ struct PhonePane: View {
                 if access.enabled { folders }
                 group("Mac sleep") {
                     Toggle("Keep the Mac awake while agents work", isOn: $keepAwake)
-                        .onChange(of: keepAwake) { UserDefaults.standard.set($0, forKey: "keepAwake") }
+                        .onChange(of: keepAwake) {
+                            UserDefaults.standard.set($0, forKey: "keepAwake")
+                            PowerAssertion.shared.refresh(store: store)
+                        }
                     note("Holds off idle sleep only while an agent is working or waiting on you, so your phone can still reach it. A closed lid on battery still sleeps.")
                 }
             }

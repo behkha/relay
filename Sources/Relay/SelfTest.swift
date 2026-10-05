@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import IOKit.pwr_mgt
 
 /// Checks run by `Relay --self-test` (scripts/selftest.sh). Package.swift has no test target and XCTest
 /// isn't guaranteed with only the Command Line Tools, so the app carries its own small harness.
@@ -28,6 +29,7 @@ enum SelfTest {
         webPush()
         pushDispatch()
         remoteStart()
+        keepAwake()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -978,5 +980,40 @@ enum SelfTest {
                                                  auth: subscription.auth), for: device.id)
         if case .failed? = deliver([201]) { check("push: a subscription outside the allowlist is never contacted", sent.isEmpty) }
         else { check("push: a subscription outside the allowlist is never contacted", false) }
+    }
+
+    // MARK: - Keep awake
+
+    /// Names of the power assertions this process holds right now.
+    private static func myAssertions() -> [String] {
+        var raw: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsByProcess(&raw) == kIOReturnSuccess,
+              let all = raw?.takeRetainedValue() as? [NSNumber: [[String: Any]]] else { return [] }
+        return (all[NSNumber(value: getpid())] ?? []).compactMap { $0["AssertName"] as? String }
+    }
+
+    private static func keepAwake() {
+        func session(_ status: AgentStatus, tasks: Int = 0) -> AgentSession {
+            var s = AgentSession(id: UUID().uuidString, workspaceId: "w", cwd: "/tmp", pid: nil, terminal: TerminalLocation(),
+                                 status: status, handle: "claude-1")
+            s.backgroundTasks = tasks
+            return s
+        }
+        let ask = InboxItem(sessionId: "s", workspaceId: "w", kind: .permission, title: "Run", body: "$ ls")
+        let done = InboxItem(sessionId: "s", workspaceId: "w", kind: .finished, title: "Done", body: "ok")
+        check("awake: needed while an agent works", PowerAssertion.needed(sessions: [session(.working)], items: []))
+        check("awake: needed while an agent is blocked on you", PowerAssertion.needed(sessions: [session(.waiting)], items: [])
+              && PowerAssertion.needed(sessions: [session(.idle)], items: [ask]))
+        check("awake: needed while background tasks run", PowerAssertion.needed(sessions: [session(.done, tasks: 1)], items: []))
+        check("awake: not needed when agents are done, ready or idle",
+              !PowerAssertion.needed(sessions: [session(.done), session(.ready), session(.idle)], items: [done]))
+
+        let power = PowerAssertion()
+        power.hold(true)
+        check("awake: the assertion is held", power.isHeld && myAssertions().contains("Relay: agents are working"))
+        power.hold(true)
+        check("awake: holding twice keeps one assertion", myAssertions().filter { $0 == "Relay: agents are working" }.count == 1)
+        power.hold(false)
+        check("awake: the assertion is released", !power.isHeld && !myAssertions().contains("Relay: agents are working"))
     }
 }

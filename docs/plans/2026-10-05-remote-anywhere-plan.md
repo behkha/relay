@@ -44,6 +44,6 @@ Rules for every task:
   - **Keep the Mac awake while agents work** toggle.
 
   Keep the existing LAN controls unchanged.
-- [ ] 11. **Keep-awake.** `PowerAssertion` holding `kIOPMAssertionTypePreventUserIdleSystemSleep` while enabled and at least one session is working or blocked, released otherwise; driven by `Store` changes.
+- [x] 11. **Keep-awake.** `PowerAssertion` holding `kIOPMAssertionTypePreventUserIdleSystemSleep` while enabled and at least one session is working or blocked, released otherwise; driven by `Store` changes.
 - [ ] 12. **README.** New "Phone, anywhere (Tailscale)" section: requirements (Tailscale on Mac and phone, HTTPS certificates enabled, tmux for remote start), setup steps, security model summary, push privacy. Update the "Relay vs. One" phone bullet and the source map.
 - [ ] 13. **Final verification.** Clean `swift build -c release --arch arm64`, `scripts/selftest.sh` all PASS, `scripts/build.sh` (without `--install`) assembles the app and the new resources are inside `Contents/Resources`. `bash -n Resources/relay-hook.sh`. Review the whole branch diff for security issues against the spec's threat model and fix what is found. Write `docs/plans/2026-10-05-remote-anywhere-report.md`: what was built, the self-test output, deviations from the spec, and the manual iPhone test checklist (tmux and tailscale are not installed on this Mac, so end-to-end testing is left to the user).
