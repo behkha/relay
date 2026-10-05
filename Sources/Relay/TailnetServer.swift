@@ -49,15 +49,33 @@ final class TailnetServer {
         return h == "::1" || h.hasPrefix("127.")
     }
 
-    /// The page only loads its own inline code and talks to its own origin; nothing may frame it.
+    /// Every response: nothing runs inline, only this origin is contacted, nothing may frame it.
     static let securityHeaders = [
-        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-            + "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; "
-            + "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
         "X-Frame-Options": "DENY",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
     ]
+
+    /// The page's policy: its own inline script runs (allowed by hash, so an injected script or
+    /// event handler never does), its inline styles apply, and it only talks to this origin.
+    static func pageCSP(for html: String) -> String {
+        var hashes: [String] = []
+        var rest = html[...]
+        while let open = rest.range(of: "<script>"), let close = rest.range(of: "</script>", range: open.upperBound..<rest.endIndex) {
+            hashes.append("'sha256-" + Data(SHA256.hash(data: Data(rest[open.upperBound..<close.lowerBound].utf8))).base64EncodedString() + "'")
+            rest = rest[close.upperBound...]
+        }
+        return "default-src 'self'; script-src 'self' \(hashes.joined(separator: " ")); style-src 'self' 'unsafe-inline'; "
+            + "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; "
+            + "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    }
+
+    static func page(_ html: String) -> HTTPResponse {
+        var r = HTTPResponse.text(html, type: "text/html; charset=utf-8")
+        r.extraHeaders["Content-Security-Policy"] = pageCSP(for: html)
+        return r
+    }
 
     /// Files the Home Screen app needs before it is paired, by URL path: (resource name, extension, type).
     static let assets: [String: (String, String, String)] = [
@@ -74,12 +92,11 @@ final class TailnetServer {
         if req.header("tailscale-funnel-request") != nil { ex.respond(.text("forbidden", status: 403)); return }
         switch (req.method, req.path) {
         case ("GET", "/"):
-            ex.respond(.text(RemoteAPI.page(), type: "text/html; charset=utf-8"))
+            ex.respond(Self.page(RemoteAPI.page()))
         case ("GET", "/pair"):
             // Installed from here, the Home Screen app opens on this pairing link (the code stays in
             // the fragment): iOS gives Home Screen apps their own storage, so they pair themselves.
-            let page = RemoteAPI.page().replacingOccurrences(of: "/manifest.webmanifest", with: "/pair.webmanifest")
-            ex.respond(.text(page, type: "text/html; charset=utf-8"))
+            ex.respond(Self.page(RemoteAPI.page().replacingOccurrences(of: "/manifest.webmanifest", with: "/pair.webmanifest")))
         case ("GET", "/pair.webmanifest"):
             ex.respond(Self.pairManifest())
         case ("GET", let path) where Self.assets[path] != nil:

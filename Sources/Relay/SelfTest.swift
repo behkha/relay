@@ -501,6 +501,13 @@ enum SelfTest {
         check("door: the page is served without a device", page.status == 200
               && page.headers["content-security-policy"]?.contains("frame-ancestors 'none'") == true
               && page.headers["x-frame-options"] == "DENY")
+        let csp = TailnetServer.pageCSP(for: "<p>x</p><script>alert(1)</script><script>go()</script>")
+        let hash = Data(SHA256.hash(data: Data("alert(1)".utf8))).base64EncodedString()
+        check("door: the page's scripts are allowed by hash, never inline at large",
+              csp.contains("'sha256-\(hash)'") && csp.components(separatedBy: "'sha256-").count == 3
+              && !csp.contains("script-src 'self' 'unsafe-inline'") && !csp.contains("'unsafe-eval'"))
+        check("door: API responses allow no scripts", http("GET", port, "/api/state").headers["content-security-policy"]
+              == TailnetServer.securityHeaders["Content-Security-Policy"])
         check("door: the API needs a signature", http("GET", port, "/api/state").status == 401
               && http("POST", port, "/api/answer", body: Data("{}".utf8)).status == 401)
         check("door: Funnel traffic is refused", http("GET", port, "/", headers: ["Tailscale-Funnel-Request": "?1"]).status == 403)

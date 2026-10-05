@@ -21,15 +21,18 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Relay"
-cp Resources/relay-hook.sh Resources/remote.html "$APP/Contents/Resources/"
+cp Resources/relay-hook.sh Resources/remote.html Resources/sw.js Resources/manifest.webmanifest "$APP/Contents/Resources/"
 
-if [ ! -f build/AppIcon.icns ] || [ scripts/make-icon.swift -nt build/AppIcon.icns ]; then
+if [ ! -f build/AppIcon.icns ] || [ scripts/make-icon.swift -nt build/AppIcon.icns ] || [ ! -f build/AppIcon.iconset/icon_512x512.png ]; then
   echo "==> Drawing icon"
   rm -rf build/AppIcon.iconset
   swift scripts/make-icon.swift build/AppIcon.iconset 2>&1 | grep -vE "search path" || true
   iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns
 fi
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# Home Screen icons for the phone page, from the same drawing.
+sips -z 192 192 build/AppIcon.iconset/icon_256x256@2x.png --out "$APP/Contents/Resources/icon-192.png" >/dev/null
+cp build/AppIcon.iconset/icon_512x512.png "$APP/Contents/Resources/icon-512.png"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

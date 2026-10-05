@@ -4,61 +4,100 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#0b0b0c">
+<meta name="apple-mobile-web-app-title" content="Relay">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <title>Relay</title>
 <style>
   :root {
     --bg: #0b0b0c; --card: #1b1b1d; --row: rgba(255,255,255,.05); --border: rgba(255,255,255,.08);
     --text: #f4f4f5; --dim: rgba(255,255,255,.58); --faint: rgba(255,255,255,.38);
-    --blue: #4c8dff; --amber: #e8b04a; --green: #3dbe7a; --sel: #1f3a2c;
+    --blue: #4c8dff; --amber: #e8b04a; --green: #3dbe7a; --red: #f06a6a; --sel: #1f3a2c;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; }
-  body { padding: calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 24px); }
-  header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-  .logo { width: 26px; height: 26px; border-radius: 8px; background: #fff; display: grid; place-items: center; }
+  body { padding: calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 88px); }
+  body.locked { overflow: hidden; }
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .logo { width: 26px; height: 26px; border-radius: 8px; background: #fff; display: grid; place-items: center; flex: none; }
   .logo i { width: 4px; height: 4px; border-radius: 50%; background: #000; display: inline-block; margin: 0 1.5px; }
+  .logo.big { width: 52px; height: 52px; border-radius: 15px; margin: 0 auto 14px; }
+  .logo.big i { width: 7px; height: 7px; margin: 0 3px; }
   h1 { font-size: 18px; margin: 0; font-weight: 650; flex: 1; }
-  select { background: var(--row); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; font: inherit; font-size: 13px; }
-  .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
-  .conn.off { background: #f06a6a; }
+  h2 { font-size: 19px; margin: 0 0 8px; font-weight: 650; }
+  select, input, textarea { background: var(--row); color: var(--text); border: 1px solid var(--border); border-radius: 10px; font: inherit; }
+  header select { padding: 6px 8px; font-size: 13px; max-width: 42vw; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:disabled { opacity: .45; }
+  .icon { background: var(--row); border: 1px solid var(--border); border-radius: 10px; width: 34px; height: 32px; display: grid; place-items: center; padding: 0; }
+  .icon svg { width: 17px; height: 17px; fill: var(--dim); }
+  .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: none; }
+  .conn.off { background: var(--red); }
+  .banner { background: rgba(240,106,106,.14); border: 1px solid rgba(240,106,106,.4); color: #ffb4b4; border-radius: 12px; padding: 10px 12px; font-size: 13.5px; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 6px; background: var(--row); border-radius: 12px; padding: 4px; margin-bottom: 12px; }
+  .tabs button { flex: 1; background: none; border: 0; border-radius: 9px; padding: 8px; font-weight: 600; font-size: 14px; color: var(--dim); }
+  .tabs button.on { background: #2a2a2e; color: var(--text); }
+  .tabs b { margin-left: 6px; font-size: 11.5px; color: #000; background: var(--amber); border-radius: 99px; padding: 1px 6px; font-weight: 700; }
+  .tabs b:empty { display: none; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-bottom: 12px; }
+  .card.flash { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(232,176,74,.35); }
   .title { font-weight: 650; font-size: 15px; margin-bottom: 10px; }
   .agent { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .avatar { width: 30px; height: 30px; border-radius: 8px; background: rgba(217,119,87,.18); color: #d97757;
-    display: grid; place-items: center; font-weight: 700; position: relative; }
+    display: grid; place-items: center; font-weight: 700; position: relative; flex: none; }
   .avatar b { position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--card); }
-  .handle { font-weight: 600; font-size: 14px; }
+  .handle { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
   .sub { color: var(--faint); font-size: 12px; }
   .chip { margin-left: auto; font-size: 11px; color: var(--dim); background: var(--row); border-radius: 99px; padding: 3px 8px; display: flex; gap: 5px; align-items: center; white-space: nowrap; }
   .chip i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
   .msg { white-space: pre-wrap; word-wrap: break-word; color: rgba(255,255,255,.92); margin: 4px 0 12px; max-height: 40vh; overflow: auto; }
   .code { font: 12.5px ui-monospace, Menlo, monospace; background: rgba(0,0,0,.35); border: 1px solid var(--border); border-radius: 10px; padding: 10px; white-space: pre-wrap; word-break: break-all; margin-bottom: 10px; max-height: 30vh; overflow: auto; }
   .opt { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; background: var(--row); border: 1px solid var(--border);
-    color: var(--text); border-radius: 11px; padding: 11px 12px; margin-bottom: 7px; font: inherit; }
+    color: var(--text); border-radius: 11px; padding: 11px 12px; margin-bottom: 7px; }
   .opt .n { width: 22px; height: 22px; border-radius: 6px; background: rgba(255,255,255,.08); color: var(--dim); font-size: 12px; font-weight: 600; display: grid; place-items: center; flex: none; }
   .opt.sel { background: var(--sel); border-color: rgba(61,190,122,.55); }
   .opt.sel .n { background: var(--green); color: #000; }
   .opt small { display: block; color: var(--faint); font-size: 12px; margin-top: 2px; }
   .rec { margin-left: auto; color: var(--amber); background: rgba(232,176,74,.14); border-radius: 99px; font-size: 11px; padding: 2px 7px; align-self: center; }
   .reply { display: flex; gap: 8px; margin-top: 4px; }
-  .reply input { flex: 1; background: rgba(255,255,255,.06); border: 1px solid var(--border); border-radius: 11px; color: var(--text); padding: 11px 12px; font: inherit; }
-  button.send, button.ghost { border: 0; border-radius: 11px; padding: 0 14px; font: inherit; font-weight: 600; }
+  .reply input { flex: 1; min-width: 0; background: rgba(255,255,255,.06); padding: 11px 12px; }
+  button.send, button.ghost { border: 0; border-radius: 11px; padding: 0 14px; font-weight: 600; }
   button.send { background: #fff; color: #000; }
+  button.send.big { width: 100%; padding: 13px; margin-top: 12px; font-size: 16px; }
   button.ghost { background: var(--row); color: var(--dim); border: 1px solid var(--border); padding: 9px 12px; font-size: 13px; }
-  .actions { display: flex; gap: 8px; margin-top: 10px; }
+  button.danger { color: #ffb4b4; border-color: rgba(240,106,106,.35); }
+  button.mini { background: var(--row); border: 1px solid var(--border); border-radius: 9px; padding: 5px 9px; font-size: 12px; font-weight: 600; color: var(--dim); flex: none; }
+  button.mini.danger { color: #ffb4b4; }
+  .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .empty { color: var(--dim); text-align: center; padding: 36px 10px; }
-  h2 { font-size: 13px; color: var(--faint); font-weight: 600; margin: 22px 2px 8px; }
-  .sess { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--row); border-radius: 12px; margin-bottom: 6px; }
+  .sess { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--row); border-radius: 12px; margin-bottom: 6px; cursor: pointer; }
+  .sess.pending { cursor: default; border: 1px dashed rgba(76,141,255,.45); }
+  .sess.err { cursor: default; align-items: flex-start; border: 1px solid rgba(240,106,106,.4); }
+  .grow { flex: 1; min-width: 0; }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-  .sess { cursor: pointer; }
+  .heat { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 1px 7px; vertical-align: 1px; white-space: nowrap; }
+  .heat svg { width: 9px; height: 12px; fill: currentColor; animation: flicker .5s infinite alternate; transform-origin: bottom; }
+  .heat.hot { color: #ffc93c; background: rgba(232,51,42,.22); box-shadow: 0 0 10px rgba(255,122,26,.35); }
+  .heat.warm { color: #ff7a1a; background: rgba(255,122,26,.12); }
+  @keyframes flicker { from { transform: scaleY(.9); } to { transform: scaleY(1.08); } }
+  .fab { position: fixed; right: 18px; bottom: calc(env(safe-area-inset-bottom) + 20px); width: 56px; height: 56px; border-radius: 50%;
+    border: 0; background: #fff; color: #000; font-size: 30px; line-height: 1; box-shadow: 0 6px 20px rgba(0,0,0,.5); z-index: 3; }
   .sheet { position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 5;
     padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 12px); }
   .sheet.on { display: flex; }
   .sheet-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .sheet-body { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 9px; padding-bottom: 10px; }
+  .seg { display: flex; gap: 4px; background: var(--row); border-radius: 10px; padding: 3px; margin-bottom: 10px; }
+  .seg button { flex: 1; border: 0; background: none; border-radius: 8px; padding: 7px; font-size: 13px; font-weight: 600; color: var(--dim); }
+  .seg button.on { background: #2a2a2e; color: var(--text); }
+  .term { flex: 1; overflow: auto; margin: 0 0 10px; background: #000; border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+    font: 11.5px/1.35 ui-monospace, Menlo, monospace; color: rgba(255,255,255,.88); white-space: pre-wrap; word-break: break-all; }
+  .term.small { flex: none; max-height: 30vh; margin: 8px 0 0; font-size: 11px; }
   .b-user { align-self: flex-end; max-width: 85%; background: rgba(76,141,255,.28); border-radius: 13px; padding: 8px 11px; white-space: pre-wrap; word-wrap: break-word; }
   .b-asst { word-wrap: break-word; color: rgba(255,255,255,.92); }
   .b-tool { background: var(--row); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
@@ -80,45 +119,157 @@
   .md th { background: rgba(255,255,255,.07); }
   .md hr { border: 0; border-top: 1px solid rgba(255,255,255,.12); margin: 10px 0; }
   .md a { color: var(--blue); }
-  .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 18px); background: #fff; color: #000; border-radius: 99px; padding: 8px 14px; font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  label { display: block; color: var(--dim); font-size: 13px; font-weight: 600; margin: 4px 0 2px; }
+  label select, label input, label textarea { display: block; width: 100%; margin-top: 6px; padding: 11px 12px; font-size: 16px; font-weight: 400; }
+  textarea { resize: vertical; min-height: 96px; }
+  .field-label { color: var(--dim); font-size: 13px; font-weight: 600; margin: 10px 0 6px; }
+  .note, .warn { border-radius: 11px; padding: 10px 12px; font-size: 13.5px; }
+  .note { background: var(--row); color: var(--dim); margin-top: 6px; }
+  .warn { background: rgba(232,176,74,.12); border: 1px solid rgba(232,176,74,.35); color: #f5d9a6; margin: 8px 0; }
+  .warn code, .note code { font: 12.5px ui-monospace, Menlo, monospace; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border);
+    color: var(--text); font-size: 14.5px; font-weight: 500; margin: 0; }
+  .row:first-of-type { border-top: 0; }
+  .row small { display: block; color: var(--faint); font-size: 12px; font-weight: 400; margin-top: 2px; }
+  .switch { appearance: none; -webkit-appearance: none; width: 46px; height: 28px; border-radius: 99px; background: rgba(255,255,255,.16);
+    position: relative; flex: none; border: 0; margin: 0; padding: 0; transition: background .15s; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .15s; }
+  .switch:checked { background: var(--green); }
+  .switch:checked::after { transform: translateX(18px); }
+  .steps { margin: 6px 0 4px; padding-left: 22px; color: var(--dim); }
+  .steps li { margin: 6px 0; }
+  .steps li.now { color: var(--text); }
+  .steps li.done { color: var(--faint); text-decoration: line-through; }
+  .screen { min-height: 80vh; display: flex; align-items: center; justify-content: center; }
+  .pcard { width: 100%; max-width: 440px; text-align: center; background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 22px 18px; }
+  .pcard .steps, .pcard label { text-align: left; }
+  .pcard button.ghost { width: 100%; margin-top: 10px; }
+  .pcard input { width: 100%; padding: 11px 12px; font-size: 16px; margin-top: 10px; }
+  .fp { font: 700 26px ui-monospace, Menlo, monospace; letter-spacing: 2px; margin: 10px 0; }
+  .spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,.15); border-top-color: #fff; animation: spin .8s linear infinite; margin: 0 auto 12px; }
+  .spin.small { width: 14px; height: 14px; border-width: 2px; margin: 0; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .undo { position: fixed; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 18px); background: #fff; color: #000; border-radius: 14px;
+    padding: 12px 14px; display: flex; align-items: center; gap: 10px; font-weight: 600; z-index: 8; overflow: hidden; }
+  .undo span { flex: 1; }
+  .undo button { border: 0; background: #000; color: #fff; border-radius: 9px; padding: 7px 12px; font-weight: 700; }
+  .undo::after { content: ""; position: absolute; left: 0; bottom: 0; height: 3px; background: var(--red); animation: drain 2s linear forwards; }
+  @keyframes drain { from { width: 100%; } to { width: 0; } }
+  .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 86px); background: #fff; color: #000; border-radius: 99px; padding: 8px 14px; font-size: 13px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 9; max-width: 90vw; text-align: center; }
   .toast.on { opacity: 1; }
 </style>
 </head>
 <body>
-<header>
-  <div class="logo"><span><i></i><i></i></span></div>
-  <h1>Relay</h1>
-  <select id="ws"><option value="">All workspaces</option></select>
-  <span id="conn" class="conn" title="Connected"></span>
-</header>
-<main id="inbox"></main>
-<h2 id="agentsTitle" hidden>Agents</h2>
-<section id="agents"></section>
+<div id="app" hidden>
+  <header>
+    <div class="logo"><span><i></i><i></i></span></div>
+    <h1>Relay</h1>
+    <select id="ws" aria-label="Workspace"><option value="">All workspaces</option></select>
+    <span id="conn" class="conn" title="Connected"></span>
+    <button id="deviceBtn" class="icon" data-act="device" aria-label="This device" hidden>
+      <svg viewBox="0 0 24 24"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.4-2.5 1a7.6 7.6 0 0 0-1.7-1l-.4-2.7h-4l-.4 2.7a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.4L4.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.4 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.7h4l.4-2.7a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.4L19.4 13zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg>
+    </button>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <div id="guide"></div>
+  <nav class="tabs">
+    <button id="tabInbox" data-act="tab" data-id="inbox">Inbox<b id="inboxCount"></b></button>
+    <button id="tabAgents" data-act="tab" data-id="agents">Agents</button>
+  </nav>
+  <main id="inbox"></main>
+  <section id="agents" hidden></section>
+  <button id="fab" class="fab" data-act="new" aria-label="New agent" hidden>+</button>
+</div>
+
 <div id="sheet" class="sheet">
   <div class="sheet-head">
-    <button class="ghost" onclick="closeSession()">‹ Back</button>
-    <div style="min-width:0;flex:1"><div class="handle" id="sheetTitle"></div><div class="sub" id="sheetSub"></div></div>
+    <button class="ghost" data-act="close-session">‹ Back</button>
+    <div class="grow"><div class="handle" id="sheetTitle"></div><div class="sub" id="sheetSub"></div></div>
+    <button class="mini danger" id="sheetKill" data-act="kill-open" hidden>Stop</button>
+  </div>
+  <div class="seg" id="sheetSeg" hidden>
+    <button data-act="view" data-id="chat">Conversation</button>
+    <button data-act="view" data-id="term">Terminal</button>
   </div>
   <div class="sheet-body" id="sheetBody"></div>
-  <form class="reply" onsubmit="sendSession(event)">
-    <input id="sheetInput" placeholder="Message…" enterkeyhint="send" onfocus="busy=true" onblur="busy=false">
+  <pre class="term" id="sheetTerm" hidden></pre>
+  <form class="reply" id="sheetForm">
+    <input id="sheetInput" placeholder="Message…" enterkeyhint="send" autocomplete="off">
     <button class="send" type="submit">Send</button>
   </form>
 </div>
+
+<div id="newSheet" class="sheet">
+  <div class="sheet-head">
+    <button class="ghost" data-act="close" data-id="newSheet">Cancel</button>
+    <div class="handle grow">New agent</div>
+  </div>
+  <div class="sheet-body" id="newBody"></div>
+</div>
+
+<div id="deviceSheet" class="sheet">
+  <div class="sheet-head">
+    <button class="ghost" data-act="close" data-id="deviceSheet">‹ Back</button>
+    <div class="handle grow">This device</div>
+  </div>
+  <div class="sheet-body" id="deviceBody"></div>
+</div>
+
+<div id="pair" class="screen" hidden></div>
+<div id="undo" class="undo" hidden><span id="undoText"></span><button data-act="undo">Undo</button></div>
 <div id="toast" class="toast"></div>
 
 <script>
+'use strict';
+// One page for both doors. The LAN door's link carries a token (?t=); the tailnet door (Tailscale,
+// https) signs every request with this device's key, kept non-extractable in IndexedDB.
 const T = new URLSearchParams(location.search).get('t') || '';
+const LAN = !!T;
 const $ = (s) => document.querySelector(s);
+const enc = new TextEncoder();
 const statusColor = { ready: 'rgba(255,255,255,.45)', working: '#4c8dff', waiting: '#e8b04a', idle: '#e8b04a', done: '#3dbe7a', ended: '#888' };
-let state = { workspaces: [], sessions: [], items: [] };
-let filter = localStorage.getItem('relay.ws') || '';
+const FLAME = '<svg viewBox="0 0 12 16" aria-hidden="true"><path d="M6 0c.9 3 5.5 5.2 5.5 9.6A5.5 5.5 0 0 1 .5 9.6C.5 7.1 2 5.4 3.2 3.9c.3 1.7 1 2.7 2.1 3.2C5.9 5 5.4 2.6 6 0z"/></svg>';
+let state = { workspaces: [], sessions: [], items: [], launches: [], caps: [] };
+let loaded = false;
+let caps = new Set(['read', 'answer']);
+let filter = keep('relay.ws') || '';
+let tab = keep('relay.tab') === 'agents' ? 'agents' : 'inbox';
 let seen = new Set();
 let drafts = {};        // itemId -> reply text
 let progress = {};      // itemId -> { step, collected, multi:Set }
 let busy = false;
+let device = null;      // { id, name, keys } on the tailnet door
+let serverOffset = 0, lastTs = 0, unauthorized = 0, failures = 0, lastOk = 0;
+let pollTimer = null, polling = false;
+let pendingItem = null;
+let optimistic = [];    // "Starting…" rows not yet confirmed by the Mac
+let pushStatus = 'unknown', resynced = false;
 
+function keep(k, v) {
+  try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {}
+  return null;
+}
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function hex(bytes) { return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''); }
+function b64url(bytes) { let s = ''; bytes.forEach(b => { s += String.fromCharCode(b); }); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function fromB64url(s) { s = String(s).replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+function deviceKind() {
+  if (/iPad/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
+  if (/iPhone/.test(navigator.userAgent)) return 'iPhone';
+  if (/Android/.test(navigator.userAgent)) return 'phone';
+  return 'browser';
+}
+function ago(ms) {
+  const s = Math.max(0, (Date.now() + serverOffset - ms) / 1000);
+  if (s < 45) return 'now';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+const modeName = (m) => ({ plan: 'Plan', acceptEdits: 'Accept edits' }[m] || 'Default');
+
 // Small Markdown renderer. Everything is HTML-escaped first; only our own tags are added,
 // and links are limited to http(s) URLs, so agent output can't inject markup.
 function mdInline(s) {
@@ -177,31 +328,155 @@ function md(src, depth) {
   return out;
 }
 
-function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('on'); setTimeout(() => el.classList.remove('on'), 1800); }
+let toastTimer = null;
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), 2200); }
+
+// MARK: Device key (tailnet door)
+
+function db() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open('relay', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+async function kv(mode, fn) {
+  const d = await db();
+  return new Promise((resolve, reject) => {
+    const tx = d.transaction('kv', mode);
+    const req = fn(tx.objectStore('kv'));
+    tx.oncomplete = () => resolve(req.result);
+    tx.onerror = tx.onabort = () => reject(tx.error);
+  });
+}
+const kvGet = (k) => kv('readonly', s => s.get(k));
+const kvPut = (k, v) => kv('readwrite', s => s.put(v, k));
+const kvDel = (k) => kv('readwrite', s => s.delete(k));
+
+async function fingerprint(raw) {
+  const h = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', raw))).slice(0, 8).toUpperCase();
+  return h.slice(0, 4) + '-' + h.slice(4);
+}
+
+// MARK: API
+
+class ApiError extends Error { constructor(status) { super('HTTP ' + status); this.status = status; } }
+
+// Timestamps follow the Mac's clock (from the Date header) so a phone with a wrong clock still signs
+// inside the Mac's one-minute window, and they never repeat.
+function nextTs() { lastTs = Math.max(Date.now() + serverOffset, lastTs + 1); return lastTs; }
+function noteClock(r) {
+  const d = Date.parse(r.headers.get('Date') || '');
+  if (isNaN(d)) return;
+  const off = d - Date.now();
+  if (Math.abs(off) > 20000) serverOffset = off; else if (Math.abs(off) < 5000) serverOffset = 0;
+}
 
 async function api(path, body) {
-  const opts = body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
-  const r = await fetch(path + '?t=' + encodeURIComponent(T), opts);
-  if (!r.ok) throw new Error(r.status);
+  const method = body === undefined ? 'GET' : 'POST';
+  const bytes = enc.encode(body === undefined ? '' : JSON.stringify(body));
+  const headers = {};
+  if (method === 'POST') headers['Content-Type'] = 'application/json';
+  let url;
+  if (LAN) {
+    url = path + (path.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(T);
+  } else {
+    if (!device) throw new ApiError(401);
+    // Signed: method, the exact path and query sent, a timestamp and the body's hash.
+    const u = new URL(path, location.origin);
+    url = u.pathname + u.search;
+    const ts = String(nextTs());
+    const digest = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, device.keys.privateKey,
+                                         enc.encode(method + '\n' + url + '\n' + ts + '\n' + digest));
+    headers['X-Relay-Device'] = device.id;
+    headers['X-Relay-Ts'] = ts;
+    headers['X-Relay-Sig'] = b64url(new Uint8Array(sig));
+  }
+  const r = await fetch(url, { method, headers, body: method === 'POST' ? bytes : undefined, cache: 'no-store', credentials: 'omit' });
+  noteClock(r);
+  const json = (r.headers.get('Content-Type') || '').includes('json');
+  if (r.status === 401 || (!r.ok && !json)) throw new ApiError(r.status);
+  unauthorized = 0;
   return r.json();
 }
 
+// MARK: Polling
+
+function startPolling() {
+  if (pollTimer || document.hidden) return;
+  poll();
+  pollTimer = setInterval(poll, 2000);
+}
+function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+
 async function poll() {
+  if (polling) return;
+  polling = true;
   try {
     const s = await api('/api/state');
-    $('#conn').classList.remove('off');
+    lastOk = Date.now(); failures = 0;
+    setBanner(false);
+    caps = new Set(s.caps || ['read', 'answer']);
     const fresh = s.items.filter(i => !seen.has(i.id) && (i.kind === 'question' || i.kind === 'permission'));
     s.items.forEach(i => seen.add(i.id));
     if (fresh.length && state.items.length && navigator.vibrate) navigator.vibrate(120);
     state = s;
-    if (!busy) render();
+    loaded = true;
+    optimistic = optimistic.filter(o => Date.now() - o.startedAt < 60000 && !(s.launches || []).some(l => l.id === o.id));
+    if (!busy) render(); else renderChrome();
+    if (pendingItem) focusItem();
+    cleanUpNotifications();
+    setBadge();
+    refreshPushStatus();
   } catch (e) {
-    $('#conn').classList.add('off');
+    if (e.status === 401 && !LAN) { if (++unauthorized >= 3) showRevoked(); }
+    else if (++failures >= 2) setBanner(true);
+  } finally {
+    polling = false;
   }
 }
 
+function setBanner(show) {
+  const b = $('#banner');
+  $('#conn').classList.toggle('off', show);
+  if (!show) { b.hidden = true; return; }
+  const when = lastOk ? new Date(lastOk).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'never';
+  b.textContent = (LAN ? "Can't reach the Mac. Is it awake and on the same Wi‑Fi?" : "Can't reach the Mac. Is Tailscale on?")
+    + ' Last updated: ' + when + '.';
+  b.hidden = false;
+}
+
+// Notifications on the lock screen whose item was answered elsewhere are closed here
+// (iOS doesn't allow silent pushes to withdraw them).
+async function cleanUpNotifications() {
+  if (LAN || !('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg || !reg.getNotifications) return;
+    const items = new Set(state.items.map(i => i.id));
+    for (const n of await reg.getNotifications()) {
+      const d = n.data || {};
+      if (d.kind === 'fire') { const s = sess(d.sessionId); if (!s || s.heat !== 'hot') n.close(); }
+      else if (d.itemId && !items.has(d.itemId)) n.close();
+    }
+  } catch (e) {}
+}
+
+function setBadge() {
+  if (!('setAppBadge' in navigator)) return;
+  const n = state.items.filter(i => i.kind === 'question' || i.kind === 'permission').length;
+  (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+}
+
+// MARK: Rendering
+
 function ws(id) { return state.workspaces.find(w => w.id === id); }
 function sess(id) { return state.sessions.find(s => s.id === id); }
+function item(id) { return state.items.find(i => i.id === id); }
+function heatBadge(s) { return s && s.heat && s.heat !== 'none' ? `<span class="heat ${s.heat === 'hot' ? 'hot' : 'warm'}">${FLAME}${esc(s.cpu)}% CPU</span>` : ''; }
+function chip(w) { return w ? `<span class="chip"><i style="background:${esc(w.color)}"></i>${esc(w.name)}</span>` : ''; }
 
 function renderFilter() {
   const sel = $('#ws');
@@ -211,29 +486,66 @@ function renderFilter() {
   sel.value = filter;
 }
 
+function renderChrome() {
+  const items = state.items.filter(i => !filter || i.workspaceId === filter);
+  const sessions = state.sessions.filter(s => s.status !== 'ended' && (!filter || s.workspaceId === filter));
+  const asking = items.filter(i => i.kind === 'question' || i.kind === 'permission').length;
+  $('#inboxCount').textContent = asking ? asking : '';
+  $('#tabAgents').textContent = sessions.length ? 'Agents · ' + sessions.length : 'Agents';
+  $('#fab').hidden = !(caps.has('control') && tab === 'agents');
+  $('#deviceBtn').hidden = LAN || !state.device;
+  if (openSessionId) renderSheetHead();
+}
+
 function render() {
   renderFilter();
+  renderChrome();
+  renderGuide();
   const items = state.items.filter(i => !filter || i.workspaceId === filter);
   const inbox = $('#inbox');
-  const active = document.activeElement && document.activeElement.dataset.item;
+  const active = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.item : null;
   // Only touch the DOM when something changed, so buttons never move under a finger.
   const html = items.length ? items.map(cardHTML).join('') : '<div class="card empty">Nothing is waiting on you.</div>';
   if (inbox.dataset.sig !== html) { inbox.innerHTML = html; inbox.dataset.sig = html; }
-  if (active) { const el = inbox.querySelector(`input[data-item="${active}"]`); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+  if (active) {
+    const el = inbox.querySelector(`input[data-item="${CSS.escape(active)}"]`);
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  }
+  const agents = $('#agents');
+  const ahtml = agentsHTML();
+  if (agents.dataset.sig !== ahtml) { agents.innerHTML = ahtml; agents.dataset.sig = ahtml; }
+}
+
+function agentsHTML() {
   const sessions = state.sessions.filter(s => s.status !== 'ended' && (!filter || s.workspaceId === filter));
-  $('#agentsTitle').hidden = !sessions.length;
-  $('#agents').innerHTML = sessions.map(s => {
-    const w = ws(s.workspaceId);
-    return `<div class="sess" onclick="openSession('${esc(s.id)}')"><span class="dot" style="background:${statusColor[s.status]}"></span>
-      <div style="flex:1;min-width:0"><div class="handle">@${esc(s.handle)}</div><div class="sub">${esc(s.path)} · ${esc(s.statusLabel)}</div></div>
-      ${w ? `<span class="chip"><i style="background:${esc(w.color)}"></i>${esc(w.name)}</span>` : ''}</div>`;
-  }).join('');
+  const rows = (caps.has('control') ? launchRows() : '') + sessions.map(sessionRow).join('');
+  return rows || `<div class="card empty">No agents running.${caps.has('control') ? ' Tap + to start one.' : ''}</div>`;
+}
+
+function sessionRow(s) {
+  const kill = caps.has('control') && s.canKill ? `<button class="mini danger" data-act="kill" data-id="${esc(s.id)}">Stop</button>` : '';
+  const name = s.title && s.title !== s.handle ? s.title : '@' + s.handle;
+  return `<div class="sess" data-act="session" data-id="${esc(s.id)}"><span class="dot" style="background:${statusColor[s.status] || '#888'}"></span>
+    <div class="grow"><div class="handle">${esc(name)} ${heatBadge(s)}</div>
+    <div class="sub">@${esc(s.handle)} · ${esc(s.path)} · ${esc(s.statusLabel)}${s.updatedAt ? ' · ' + ago(s.updatedAt) : ''}</div></div>
+    ${chip(ws(s.workspaceId))}${kill}</div>`;
+}
+
+function launchRows() {
+  const fromMac = (state.launches || []).filter(l => !l.sessionId);
+  const rows = fromMac.concat(optimistic.filter(o => !fromMac.some(l => l.id === o.id)));
+  return rows.filter(l => !filter || l.workspaceId === filter).map(l => l.error
+    ? `<div class="sess err"><div class="grow"><div class="handle">Couldn't start in ${esc(l.folder)}</div>
+        ${l.prompt ? `<div class="sub">${esc(l.prompt)}</div>` : ''}<pre class="term small">${esc(l.error)}</pre></div>
+        <button class="mini" data-act="launch-dismiss" data-id="${esc(l.id)}">Dismiss</button></div>`
+    : `<div class="sess pending"><span class="spin small"></span><div class="grow"><div class="handle">Starting… ${esc(l.folder)}</div>
+        <div class="sub">${esc(l.prompt || 'No prompt')} · ${esc(modeName(l.mode))}</div></div></div>`).join('');
 }
 
 function cardHTML(it) {
   const s = sess(it.sessionId) || { handle: 'claude', path: '', status: 'waiting' };
-  const w = ws(it.workspaceId);
   const word = { question: 'asking', permission: 'asking', waiting: 'waiting', finished: 'done' }[it.kind];
+  const id = esc(it.id);
   let body = '';
   if (it.kind === 'question') {
     const p = progress[it.id] || (progress[it.id] = { step: 0, collected: {}, multi: new Set() });
@@ -244,35 +556,45 @@ function cardHTML(it) {
       const rec = /\(recommended\)/i.test(o.label);
       const label = o.label.replace(/\(recommended\)/ig, '').trim();
       const sel = q.multiSelect && p.multi.has(i);
-      body += `<button class="opt ${sel ? 'sel' : ''}" onclick="choose('${it.id}', ${i})"><span class="n">${sel ? '✓' : i + 1}</span>
+      body += `<button class="opt ${sel ? 'sel' : ''}" data-act="choose" data-id="${id}" data-i="${i}"><span class="n">${sel ? '✓' : i + 1}</span>
         <span>${esc(label)}${o.description ? `<small>${esc(o.description)}</small>` : ''}</span>${rec ? '<span class="rec">Recommended</span>' : ''}</button>`;
     });
-    if (q.multiSelect) body += `<div class="actions"><button class="send" style="padding:10px 16px" onclick="submitMulti('${it.id}')">Submit</button></div>`;
+    if (q.multiSelect) body += `<div class="actions"><button class="send" style="padding:10px 16px" data-act="submit-multi" data-id="${id}">Submit</button></div>`;
   } else if (it.kind === 'permission') {
     body += `<div class="sub" style="margin-bottom:6px">${it.toolName === 'Bash' ? 'Wants to run' : 'Wants to use ' + esc(it.toolName || 'a tool')}</div>`;
     if (it.body) body += `<div class="code">${esc(it.body)}</div>`;
     (it.options || []).forEach((o, i) => {
-      body += `<button class="opt" onclick="permit('${it.id}', ${i})"><span class="n">${i + 1}</span><span>${esc(o)}</span></button>`;
+      body += `<button class="opt" data-act="permit" data-id="${id}" data-i="${i}"><span class="n">${i + 1}</span><span>${esc(o)}</span></button>`;
     });
   } else {
     if (it.body) body += `<div class="msg md" style="white-space:normal">${md(it.body)}</div>`;
-    body += `<div class="actions" style="margin:-4px 0 10px"><button class="ghost" onclick="dismissItem('${it.id}')">Done</button></div>`;
+    body += `<div class="actions" style="margin:-4px 0 10px"><button class="ghost" data-act="dismiss" data-id="${id}">Done</button></div>`;
   }
   const ph = it.kind === 'permission' ? `Tell @${esc(s.handle)} what to do instead…` : it.kind === 'question' ? 'Or type an answer…' : `Reply to @${esc(s.handle)}…`;
-  return `<div class="card">
+  return `<div class="card" data-card="${id}">
     <div class="title">${esc(it.title || 'Inbox')}</div>
-    <div class="agent"><div class="avatar">✻<b style="background:${statusColor[s.status] || '#888'}"></b></div>
-      <div style="min-width:0"><div class="handle">@${esc(s.handle)}</div><div class="sub">${esc(s.path)} · ${word}</div></div>
-      ${w ? `<span class="chip"><i style="background:${esc(w.color)}"></i>${esc(w.name)}</span>` : ''}</div>
+    <div class="agent" data-act="session" data-id="${esc(it.sessionId)}"><div class="avatar">✻<b style="background:${statusColor[s.status] || '#888'}"></b></div>
+      <div style="min-width:0"><div class="handle">@${esc(s.handle)} ${heatBadge(s)}</div><div class="sub">${esc(s.path)} · ${word}</div></div>
+      ${chip(ws(it.workspaceId))}</div>
     ${body}
-    <form class="reply" onsubmit="reply(event, '${it.id}')">
-      <input data-item="${it.id}" placeholder="${ph}" value="${esc(drafts[it.id] || '')}" oninput="drafts['${it.id}']=this.value" onfocus="busy=true" onblur="busy=false" enterkeyhint="send">
+    <form class="reply" data-item="${id}">
+      <input data-item="${id}" placeholder="${ph}" value="${esc(drafts[it.id] || '')}" enterkeyhint="send" autocomplete="off">
       <button class="send" type="submit">Send</button>
     </form>
   </div>`;
 }
 
-function item(id) { return state.items.find(i => i.id === id); }
+function setTab(t) {
+  tab = t === 'agents' ? 'agents' : 'inbox';
+  keep('relay.tab', tab);
+  $('#inbox').hidden = tab !== 'inbox';
+  $('#agents').hidden = tab !== 'agents';
+  $('#tabInbox').classList.toggle('on', tab === 'inbox');
+  $('#tabAgents').classList.toggle('on', tab === 'agents');
+  renderChrome();
+}
+
+// MARK: Answers
 
 let sending = false;
 async function post(body, ok) {
@@ -280,8 +602,8 @@ async function post(body, ok) {
   sending = true;
   try {
     const r = await api('/api/answer', body);
-    if (r.ok) { toast(ok); } else { toast(r.error || 'Could not send'); }
-  } catch (e) { toast('Mac not reachable'); }
+    toast(r.ok ? ok : (r.error || 'Could not send'));
+  } catch (e) { toast("Can't reach the Mac"); }
   sending = false;
   busy = false;
   poll();
@@ -310,11 +632,7 @@ function next(it, p) {
   post({ action: 'answers', itemId: it.id, answers: p.collected }, 'Answered');
 }
 
-function permit(id, i) { post({ action: 'permission', itemId: id, index: i }, 'Sent'); }
-function dismissItem(id) { post({ action: 'dismiss', itemId: id }, 'Cleared'); }
-
-function reply(e, id) {
-  e.preventDefault();
+function reply(id) {
   const text = (drafts[id] || '').trim();
   if (!text) return;
   delete drafts[id];
@@ -322,23 +640,83 @@ function reply(e, id) {
   post({ action: 'reply', itemId: id, text }, 'Sent');
 }
 
-let openSessionId = null;
+// MARK: Deep links (#item=, #session=) from notifications
+
+function handleHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const it = h.get('item'), s = h.get('session');
+  if (!it && !s) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (it) { pendingItem = it; setTab('inbox'); focusItem(); }
+  if (s) { setTab('agents'); openSession(s); }
+}
+
+function focusItem() {
+  if (!pendingItem || !loaded) return;
+  const el = document.querySelector(`[data-card="${CSS.escape(pendingItem)}"]`);
+  if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800); }
+  else toast('Already answered');
+  pendingItem = null;
+}
+
+// MARK: Sheets
+
+function showSheet(id) { $('#' + id).classList.add('on'); document.body.classList.add('locked'); }
+function hideSheet(id) {
+  $('#' + id).classList.remove('on');
+  if (!document.querySelector('.sheet.on')) document.body.classList.remove('locked');
+}
+
+let openSessionId = null, view = 'chat', sheetTimer = null;
+function segOn(sel, v) { document.querySelectorAll(sel + ' button').forEach(b => b.classList.toggle('on', b.dataset.id === v)); }
+
 async function openSession(id) {
   openSessionId = id;
-  $('#sheet').classList.add('on');
-  await refreshSession(true);
+  view = 'chat';
+  $('#sheetBody').innerHTML = '';
+  $('#sheetBody').dataset.sig = '';
+  $('#sheetTerm').textContent = '';
+  $('#sheetBody').hidden = false;
+  $('#sheetTerm').hidden = true;
+  showSheet('sheet');
+  clearInterval(sheetTimer);
+  sheetTimer = setInterval(() => { if (!document.hidden) refreshSheet(false); }, 2500);
+  await refreshSheet(true);
 }
-function closeSession() { openSessionId = null; $('#sheet').classList.remove('on'); }
-async function refreshSession(scroll) {
-  if (!openSessionId) return;
+function closeSession() { openSessionId = null; clearInterval(sheetTimer); sheetTimer = null; hideSheet('sheet'); }
+
+function renderSheetHead() {
   const s = sess(openSessionId) || {};
-  $('#sheetTitle').textContent = '@' + (s.handle || 'agent');
-  $('#sheetSub').textContent = (s.path || '') + ' · ' + (s.statusLabel || '');
+  const name = s.title && s.title !== s.handle ? s.title : '@' + (s.handle || 'agent');
+  $('#sheetTitle').innerHTML = esc(name) + ' ' + heatBadge(s);
+  $('#sheetSub').textContent = '@' + (s.handle || 'agent') + ' · ' + (s.path || '') + ' · ' + (s.statusLabel || 'ended');
   $('#sheetInput').placeholder = 'Message @' + (s.handle || 'agent') + '…';
+  $('#sheetKill').hidden = !(caps.has('control') && s.canKill);
+  const terminal = caps.has('control') && s.tmux;
+  $('#sheetSeg').hidden = !terminal;
+  if (!terminal && view === 'term') setView('chat');
+  segOn('#sheetSeg', view);
+}
+
+function setView(v) {
+  view = v === 'term' ? 'term' : 'chat';
+  segOn('#sheetSeg', view);
+  $('#sheetBody').hidden = view !== 'chat';
+  $('#sheetTerm').hidden = view !== 'term';
+  refreshSheet(true);
+}
+
+function refreshSheet(scroll) {
+  if (!openSessionId) return;
+  renderSheetHead();
+  return view === 'term' ? refreshTerminal() : refreshSession(scroll);
+}
+
+async function refreshSession(scroll) {
+  const want = openSessionId;
   try {
-    const want = openSessionId;
-    const r = await fetch('/api/session?t=' + encodeURIComponent(T) + '&id=' + encodeURIComponent(want)).then(r => r.json());
-    if (openSessionId !== want) return;   // switched agents while loading
+    const r = await api('/api/session?id=' + encodeURIComponent(want));
+    if (openSessionId !== want || view !== 'chat') return;   // switched while loading
     const body = $('#sheetBody');
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
     const html = (r.entries || []).map(e => {
@@ -350,20 +728,451 @@ async function refreshSession(scroll) {
     if (body.dataset.sig !== html) { body.innerHTML = html; body.dataset.sig = html; if (scroll || atBottom) body.scrollTop = body.scrollHeight; }
   } catch (e) {}
 }
-async function sendSession(e) {
-  e.preventDefault();
+
+// Read-only: the last 60 lines of the agent's tmux pane. Replies go through the message box.
+async function refreshTerminal() {
+  const want = openSessionId;
+  try {
+    const r = await api('/api/terminal?id=' + encodeURIComponent(want));
+    if (openSessionId !== want || view !== 'term') return;
+    const el = $('#sheetTerm');
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.textContent = r.ok ? (r.text || '(empty)') : (r.error || 'No terminal to show.');
+    if (atBottom || !el.dataset.seen) { el.scrollTop = el.scrollHeight; el.dataset.seen = '1'; }
+  } catch (e) {}
+}
+
+async function sendSession() {
   const input = $('#sheetInput'); const text = input.value.trim();
   if (!text || !openSessionId) return;
   input.value = ''; input.blur();
   await post({ action: 'message', sessionId: openSessionId, text }, 'Sent');
-  setTimeout(() => refreshSession(true), 1500);
+  setTimeout(() => refreshSheet(true), 1500);
 }
-setInterval(() => refreshSession(false), 2500);
 
-$('#ws').addEventListener('change', e => { filter = e.target.value; localStorage.setItem('relay.ws', filter); render(); });
-poll();
-setInterval(poll, 2000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+// MARK: Stop an agent (confirm, then a 2 s undo bar)
+
+let pendingKill = null;
+function askKill(id) {
+  const s = sess(id);
+  if (!s || pendingKill) return;
+  if (!confirm('Stop @' + s.handle + '? It ends like closing its terminal.')) return;
+  pendingKill = { id, timer: setTimeout(() => doKill(id), 2000) };
+  $('#undoText').textContent = 'Stopping @' + s.handle + '…';
+  $('#undo').hidden = false;
+}
+function undoKill() {
+  if (!pendingKill) return;
+  clearTimeout(pendingKill.timer);
+  pendingKill = null;
+  $('#undo').hidden = true;
+  toast('Kept running');
+}
+async function doKill(id) {
+  pendingKill = null;
+  $('#undo').hidden = true;
+  try {
+    const r = await api('/api/kill', { sessionId: id });
+    toast(r.ok ? 'Stopped' : (r.error || "Couldn't stop it"));
+    if (r.ok && openSessionId === id) closeSession();
+  } catch (e) { toast("Can't reach the Mac"); }
+  poll();
+}
+
+// MARK: New agent
+
+let folderData = null;
+const newForm = { ws: '', folder: '', mode: 'default', prompt: '' };
+
+async function openNew() {
+  showSheet('newSheet');
+  $('#newBody').innerHTML = '<div class="b-note">Loading folders…</div>';
+  try { folderData = await api('/api/folders'); } catch (e) { $('#newBody').innerHTML = `<div class="note">Can't reach the Mac.</div>`; return; }
+  const wsList = folderData.workspaces || [];
+  if (!wsList.some(w => w.id === newForm.ws)) newForm.ws = (wsList.find(w => w.id === filter) || wsList[0] || {}).id || '';
+  renderNew();
+}
+
+function renderNew() {
+  const d = folderData || { workspaces: [] };
+  const w = d.workspaces.find(x => x.id === newForm.ws) || { folders: [] };
+  if (!w.folders.some(f => f.path === newForm.folder)) newForm.folder = (w.folders[0] || {}).path || '';
+  const opt = f => `<option value="${esc(f.path)}" ${f.path === newForm.folder ? 'selected' : ''}>${esc(f.name)} — ${esc(f.short)}</option>`;
+  const pinned = w.folders.filter(f => f.pinned), recent = w.folders.filter(f => !f.pinned);
+  const folders = w.folders.length
+    ? `<select id="newFolder">${pinned.length ? `<optgroup label="Pinned">${pinned.map(opt).join('')}</optgroup>` : ''}${recent.length ? `<optgroup label="Recent">${recent.map(opt).join('')}</optgroup>` : ''}</select>`
+    : '<div class="note">No folders yet for this workspace. Run an agent in a folder on the Mac once, or pin folders in Relay → Settings → Phone.</div>';
+  const modes = [['default', 'Default'], ['plan', 'Plan'], ['acceptEdits', 'Accept edits']]
+    .map(([m, l]) => `<button type="button" data-act="mode" data-id="${m}" class="${newForm.mode === m ? 'on' : ''}">${l}</button>`).join('');
+  $('#newBody').innerHTML = `
+    ${d.tmux ? '' : '<div class="warn">Starting agents from the phone needs tmux on the Mac. Install it there with <code>brew install tmux</code>, then try again.</div>'}
+    <label>Workspace<select id="newWs">${d.workspaces.map(x => `<option value="${esc(x.id)}" ${x.id === newForm.ws ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <label>Folder${folders}</label>
+    <label>Prompt<textarea id="newPrompt" rows="5" placeholder="What should it do? (Dictation works.)">${esc(newForm.prompt)}</textarea></label>
+    <div class="field-label">Mode</div>
+    <div class="seg" id="newModes">${modes}</div>
+    <button class="send big" data-act="start" ${d.tmux && newForm.folder ? '' : 'disabled'}>Start</button>
+    <div class="sub">Runs in a tmux session on the Mac. You can attach to it there with <code>tmux attach</code>.</div>`;
+}
+
+function readNew() {
+  newForm.ws = ($('#newWs') || {}).value || newForm.ws;
+  newForm.folder = ($('#newFolder') || {}).value || newForm.folder;
+  newForm.prompt = ($('#newPrompt') || {}).value ?? newForm.prompt;
+}
+
+async function startAgent() {
+  readNew();
+  if (!newForm.folder) return;
+  const row = { id: 'tmp-' + Date.now(), workspaceId: newForm.ws, folder: newForm.folder.split('/').pop(), prompt: newForm.prompt.trim().slice(0, 200),
+                mode: newForm.mode, startedAt: Date.now(), error: '' };
+  optimistic.push(row);
+  hideSheet('newSheet');
+  setTab('agents');
+  render();
+  try {
+    const r = await api('/api/start', { workspaceId: newForm.ws, folder: newForm.folder, prompt: newForm.prompt, mode: newForm.mode });
+    if (r.ok) { row.id = r.launchId; newForm.prompt = ''; toast('Starting…'); }
+    else { optimistic = optimistic.filter(o => o !== row); toast(r.error || "Couldn't start it"); }
+  } catch (e) { optimistic = optimistic.filter(o => o !== row); toast("Can't reach the Mac"); }
+  render();
+  poll();
+}
+
+async function dismissLaunch(id) {
+  optimistic = optimistic.filter(o => o.id !== id);
+  try { await api('/api/launch/dismiss', { id }); } catch (e) {}
+  poll();
+}
+
+// MARK: Notifications (Home Screen app on the tailnet)
+
+async function computePushStatus() {
+  if (LAN) return 'lan';
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  if (!supported) return isIOS() && !isStandalone() ? 'install' : 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  if (Notification.permission !== 'granted') return 'off';
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (!sub) return 'off';
+    // Allowed here, but the Mac lost it (it was reset, or the push service said it was gone): resend once.
+    if (state.device && !state.device.subscribed && !resynced) { resynced = true; await sendSubscription(sub); }
+    return 'on';
+  } catch (e) { return 'off'; }
+}
+
+async function refreshPushStatus() {
+  const s = await computePushStatus();
+  if (s === pushStatus) return;
+  pushStatus = s;
+  renderGuide();
+  if ($('#deviceSheet').classList.contains('on')) renderDevice();
+}
+
+function renderGuide() {
+  const g = $('#guide');
+  let html = '';
+  if (!LAN && keep('relay.guide') !== 'hidden' && (pushStatus === 'install' || pushStatus === 'off')) {
+    const step = pushStatus === 'install' ? 1 : 3;
+    const li = (n, text) => `<li class="${n < step ? 'done' : n === step ? 'now' : ''}">${text}</li>`;
+    html = `<div class="card"><div class="title">Get notifications on this ${esc(deviceKind())}</div><ol class="steps">
+      ${li(1, '<b>Add to Home Screen:</b> tap Share, then Add to Home Screen.')}
+      ${li(2, '<b>Open Relay from the Home Screen.</b> It pairs once more there, because iOS keeps its storage apart from Safari.')}
+      ${li(3, '<b>Enable notifications.</b>')}
+      </ol><div class="actions">${step === 3 ? '<button class="send" style="padding:9px 14px" data-act="push-on">Enable notifications</button>' : ''}<button class="ghost" data-act="guide-hide">Not now</button></div></div>`;
+  }
+  if (g.dataset.sig !== html) { g.innerHTML = html; g.dataset.sig = html; }
+}
+
+async function sendSubscription(sub) {
+  const j = sub.toJSON();
+  return api('/api/push/subscribe', { endpoint: j.endpoint, keys: j.keys });
+}
+
+function sameKey(a, b) {
+  if (!a) return false;
+  const x = new Uint8Array(a);
+  return x.length === b.length && x.every((v, i) => v === b[i]);
+}
+
+async function enablePush() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    toast(isIOS() ? 'Open Relay from your Home Screen first' : "This browser can't get notifications"); return;
+  }
+  // Ask first, straight from the tap: iOS only shows the prompt for a direct user action.
+  let permission;
+  try { permission = await Notification.requestPermission(); } catch (e) { permission = Notification.permission; }
+  if (permission !== 'granted') { toast(permission === 'denied' ? 'Notifications are blocked in Settings' : 'Notifications not allowed'); refreshPushStatus(); return; }
+  try {
+    if (!state.device) await poll();
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    const key = fromB64url(state.device.vapidKey);
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && !sameKey(sub.options && sub.options.applicationServerKey, key)) { await sub.unsubscribe(); sub = null; }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    const r = await sendSubscription(sub);
+    toast(r.ok ? 'Notifications on' : (r.error || 'The Mac refused this subscription'));
+  } catch (e) { toast("Couldn't turn on notifications"); }
+  await poll();
+  pushStatus = 'unknown';
+  refreshPushStatus();
+}
+
+async function disablePush() {
+  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) {}
+  try { await api('/api/push/unsubscribe', {}); } catch (e) {}
+  keep('relay.guide', 'hidden');
+  toast('Notifications off');
+  await poll();
+  refreshPushStatus();
+}
+
+async function testPush() {
+  try { const r = await api('/api/push/test', {}); toast(r.ok ? (r.note || 'Sent. It arrives in a moment.') : (r.error || "Couldn't send it")); }
+  catch (e) { toast("Can't reach the Mac"); }
+}
+
+async function setPref(key, on) {
+  try {
+    const r = await api('/api/push/prefs', { [key]: on });
+    if (r.ok && state.device) { state.device.prefs[key] = on; toast('Saved'); } else toast(r.error || "Couldn't save");
+  } catch (e) { toast("Can't reach the Mac"); renderDevice(); }
+}
+
+function openDevice() { showSheet('deviceSheet'); renderDevice(); refreshPushStatus(); }
+
+function renderDevice() {
+  const d = state.device;
+  if (!d) { $('#deviceBody').innerHTML = '<div class="note">Loading…</div>'; return; }
+  const p = d.prefs || {};
+  const status = {
+    on: 'On', off: 'Off',
+    denied: isIOS() ? 'Blocked. Allow notifications for Relay in iOS Settings → Notifications.' : "Blocked. Allow notifications for this site in the browser's settings.",
+    install: 'Add Relay to your Home Screen to get notifications.',
+    unsupported: "This browser can't get push notifications.",
+  }[pushStatus] || 'Checking…';
+  const toggle = (key, label, hint) => `<label class="row"><span>${label}${hint ? `<small>${hint}</small>` : ''}</span>
+    <input type="checkbox" class="switch" data-pref="${key}" ${p[key] ? 'checked' : ''}></label>`;
+  $('#deviceBody').innerHTML = `
+    <div class="card"><div class="sub">Name</div><div class="handle">${esc(d.name)}</div>
+      <div class="sub" style="margin-top:10px">Notifications</div><div class="handle">${esc(status)}</div>
+      ${pushStatus === 'off' ? '<button class="send big" data-act="push-on">Enable notifications</button>' : ''}
+      ${pushStatus === 'on' ? '<div class="actions"><button class="ghost" data-act="push-test">Send test push</button><button class="ghost" data-act="push-off">Turn off</button></div>' : ''}
+    </div>
+    <div class="card"><div class="sub" style="margin-bottom:4px">Notify me</div>
+      ${toggle('blocked', 'When an agent asks something')}
+      ${toggle('finished', 'When an agent finishes')}
+      ${toggle('fire', 'When an agent heats up the Mac')}
+      ${toggle('hideContent', 'Hide content in notifications', 'Shows “An agent needs you” instead of what the agent said.')}
+    </div>
+    <div class="card"><button class="ghost danger" style="width:100%" data-act="forget">Forget this device</button>
+      <div class="sub" style="margin-top:8px">Deletes this device's key here and on the Mac. You can pair it again later.</div></div>`;
+}
+
+async function forgetDevice() {
+  if (!confirm('Forget this device? It stops working with Relay until you pair it again.')) return;
+  try { await api('/api/device/forget', {}); } catch (e) {}
+  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) {}
+  try { await kvDel('device'); } catch (e) {}
+  device = null;
+  stopPolling();
+  location.replace('/');
+}
+
+// MARK: Pairing (tailnet door)
+
+let pairCode = null, pairHere = false;
+
+function codeFrom(text) {
+  const m = String(text || '').match(/[#&?]c=([A-Za-z0-9_-]{40,64})/);
+  return m ? m[1] : null;
+}
+
+function showScreen(html) {
+  stopPolling();
+  $('#app').hidden = true;
+  const el = $('#pair');
+  el.innerHTML = `<div class="pcard"><div class="logo big"><span><i></i><i></i></span></div>${html}</div>`;
+  el.hidden = false;
+}
+
+function showPair(code, message) {
+  pairCode = code;
+  const warn = message ? `<div class="warn">${esc(message)}</div>` : '';
+  if (code && isIOS() && !isStandalone() && !pairHere) {
+    showScreen(`<h2>Install Relay, then pair</h2><ol class="steps">
+      <li><b>Add to Home Screen:</b> tap Share (the square with the arrow), then Add to Home Screen.</li>
+      <li><b>Open Relay from your Home Screen.</b> It finishes pairing there; your Mac asks you to allow it.</li>
+      <li><b>Enable notifications</b> in the app.</li></ol>
+      <p class="sub">iOS keeps the Home Screen app's storage apart from Safari, so the app pairs itself. If it opens without this link, copy it here and paste it there.</p>
+      ${warn}<button class="send big" data-act="pair-copy">Copy pairing link</button>
+      <button class="ghost" data-act="pair-here">Pair this Safari tab instead (no notifications)</button>`);
+    return;
+  }
+  if (code) {
+    const kind = deviceKind();
+    showScreen(`<h2>Pair this ${esc(kind)}</h2>
+      <p class="sub">It can then answer, start and stop your agents from anywhere on your tailnet. Your Mac asks you to allow it.</p>
+      <label>Device name<input id="pairName" value="${esc(kind === 'browser' ? 'Browser' : kind === 'phone' ? 'Phone' : kind)}" maxlength="40" autocomplete="off"></label>
+      ${warn}<button class="send big" data-act="pair-go">Pair</button>`);
+    return;
+  }
+  showScreen(`<h2>Pair with your Mac</h2>
+    <p class="sub">On your Mac, open Relay → Settings → Phone → Pair a device, then scan the code with the Camera.</p>
+    ${warn}${isStandalone() ? `<p class="sub">Already scanned it in Safari? Paste the pairing link here.</p>
+    <button class="send big" data-act="pair-paste">Paste pairing link</button>
+    <input id="pairLink" placeholder="https://…/pair#c=…" autocomplete="off" inputmode="url">
+    <button class="ghost" data-act="pair-use">Use this link</button>` : ''}`);
+}
+
+async function pairNow() {
+  const name = (($('#pairName') || {}).value || deviceKind()).trim().slice(0, 40);
+  const code = pairCode;
+  let keys, raw;
+  try {
+    // Non-extractable: the private key can sign, but no script can ever read it out.
+    keys = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+    raw = new Uint8Array(await crypto.subtle.exportKey('raw', keys.publicKey));
+  } catch (e) { showPair(code, "This browser can't make a key for pairing."); return; }
+  const fp = await fingerprint(raw);
+  showScreen(`<div class="spin"></div><h2>Allow it on your Mac</h2>
+    <p class="sub">Your Mac asks to pair “${esc(name)}”. Check that it shows</p><div class="fp">${esc(fp)}</div><p class="sub">then click Allow there.</p>`);
+  let r, j = {};
+  try {
+    r = await fetch('/api/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', credentials: 'omit',
+                                   body: JSON.stringify({ code, publicKey: b64url(raw), deviceName: name }) });
+    j = await r.json().catch(() => ({}));
+  } catch (e) { showPair(code, "Can't reach the Mac. Is Tailscale on? Try again; if the code was used, make a new one on the Mac."); return; }
+  if (r.ok && j.deviceId) {
+    device = { id: j.deviceId, name: j.name || name, keys };
+    try { await kvPut('device', device); }
+    catch (e) { showPair(null, "Paired, but this browser can't keep the key (private browsing?). Revoke it on the Mac and pair again in a normal window."); return; }
+    history.replaceState(null, '', '/');
+    pairCode = null;
+    startApp('Paired');
+    return;
+  }
+  // Every answer after the code check uses the code up.
+  history.replaceState(null, '', '/pair');
+  showPair(null, r.status === 401 ? 'This pairing code expired or was already used. Make a new one on the Mac and scan it again.'
+                                  : (j.error || (r.status === 403 ? 'Not allowed on the Mac.' : 'Pairing failed (' + r.status + ').')));
+}
+
+async function copyPairLink() {
+  try { await navigator.clipboard.writeText(location.href); toast('Copied. Open Relay from your Home Screen to paste it.'); }
+  catch (e) { toast("Couldn't copy. Long-press the address instead."); }
+}
+
+async function pastePairLink() {
+  let text = '';
+  try { text = await navigator.clipboard.readText(); } catch (e) {}
+  const code = codeFrom(text);
+  if (code) showPair(code); else toast('No pairing link on the clipboard');
+}
+
+function showRevoked() {
+  showScreen(`<h2>Not paired anymore</h2><p class="sub">Your Mac no longer accepts this device. It was revoked there, or Relay was reset.</p>
+    <button class="send big" data-act="repair">Pair again</button><button class="ghost" data-act="retry">Try again</button>`);
+}
+
+// MARK: Events (no inline handlers: the tailnet door's CSP allows only this script)
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const id = el.dataset.id, i = el.dataset.i === undefined ? -1 : +el.dataset.i;
+  switch (el.dataset.act) {
+    case 'tab': setTab(id); break;
+    case 'choose': choose(id, i); break;
+    case 'submit-multi': submitMulti(id); break;
+    case 'permit': post({ action: 'permission', itemId: id, index: i }, 'Sent'); break;
+    case 'dismiss': post({ action: 'dismiss', itemId: id }, 'Cleared'); break;
+    case 'session': openSession(id); break;
+    case 'close-session': closeSession(); break;
+    case 'close': hideSheet(id); break;
+    case 'view': setView(id); break;
+    case 'kill': e.stopPropagation(); askKill(id); break;
+    case 'kill-open': askKill(openSessionId); break;
+    case 'undo': undoKill(); break;
+    case 'new': openNew(); break;
+    case 'mode': readNew(); newForm.mode = id; segOn('#newModes', id); break;
+    case 'start': startAgent(); break;
+    case 'launch-dismiss': dismissLaunch(id); break;
+    case 'device': openDevice(); break;
+    case 'push-on': enablePush(); break;
+    case 'push-off': disablePush(); break;
+    case 'push-test': testPush(); break;
+    case 'forget': forgetDevice(); break;
+    case 'guide-hide': keep('relay.guide', 'hidden'); renderGuide(); break;
+    case 'pair-go': pairNow(); break;
+    case 'pair-copy': copyPairLink(); break;
+    case 'pair-here': pairHere = true; showPair(pairCode); break;
+    case 'pair-paste': pastePairLink(); break;
+    case 'pair-use': { const c = codeFrom(($('#pairLink') || {}).value); if (c) showPair(c); else toast("That isn't a pairing link"); break; }
+    case 'repair': kvDel('device').catch(() => {}).then(() => { device = null; unauthorized = 0; showPair(null); }); break;
+    case 'retry': unauthorized = 0; startApp(); break;
+  }
+});
+
+document.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = e.target;
+  if (f.id === 'sheetForm') sendSession();
+  else if (f.dataset.item) reply(f.dataset.item);
+});
+document.addEventListener('input', (e) => { const t = e.target; if (t.dataset && t.dataset.item) drafts[t.dataset.item] = t.value; });
+document.addEventListener('focusin', (e) => { if (e.target.matches('input:not([type=checkbox]), textarea')) busy = true; });
+document.addEventListener('focusout', (e) => { if (e.target.matches('input:not([type=checkbox]), textarea')) busy = false; });
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.id === 'ws') { filter = t.value; keep('relay.ws', filter); render(); }
+  else if (t.id === 'newWs') { readNew(); newForm.ws = t.value; newForm.folder = ''; renderNew(); }
+  else if (t.id === 'newFolder') newForm.folder = t.value;
+  else if (t.dataset && t.dataset.pref) setPref(t.dataset.pref, t.checked);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPolling();
+  else if (!$('#app').hidden) startPolling();
+});
+window.addEventListener('hashchange', handleHash);
+
+// MARK: Start
+
+function startApp(message) {
+  $('#pair').hidden = true;
+  $('#app').hidden = false;
+  if (!LAN && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+  setTab(tab);
+  handleHash();
+  startPolling();
+  if (message) toast(message);
+}
+
+(async function boot() {
+  if (!LAN && 'serviceWorker' in navigator) {
+    // A tapped notification asks an open window to show its card.
+    navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'open' && e.data.hash) location.hash = e.data.hash; });
+  }
+  if (LAN) { startApp(); return; }
+  if (!window.isSecureContext || !window.crypto || !crypto.subtle || !window.indexedDB) {
+    showScreen("<h2>Open Relay's link</h2><p class=\"sub\">Use the address from Relay → Settings → Phone on your Mac.</p>");
+    return;
+  }
+  try { device = (await kvGet('device')) || null; } catch (e) { device = null; }
+  const code = codeFrom(location.hash);
+  if (location.pathname === '/pair' || code) {
+    if (device) { history.replaceState(null, '', '/'); startApp(); return; }   // already paired: the old link does nothing
+    showPair(code);
+    return;
+  }
+  if (!device) { showPair(null); return; }
+  startApp();
+})();
 </script>
 </body>
 </html>
