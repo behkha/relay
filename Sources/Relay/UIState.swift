@@ -129,7 +129,7 @@ final class UIState: ObservableObject {
     /// The pinned item, if it is still in the inbox.
     func pinnedItem(in store: Store) -> InboxItem? {
         guard let id = currentItemId else { return nil }
-        return store.visibleItems.first { $0.id == id }
+        return store.filteredItems.first { $0.id == id }
     }
 
     var acceptsChoiceKeys: Bool {
@@ -138,19 +138,19 @@ final class UIState: ObservableObject {
 
     /// The item the card shows, falling back to the first visible one.
     func currentItem(in store: Store) -> InboxItem? {
-        let items = store.visibleItems
+        let items = store.filteredItems
         if let id = currentItemId, let it = items.first(where: { $0.id == id }) { return it }
         return items.first
     }
 
     func move(_ delta: Int, store: Store) {
         // Pick the neighbour first: committing may remove the current card from the list.
-        let items = store.visibleItems
+        let items = store.filteredItems
         guard !items.isEmpty else { return }
         let cur = items.firstIndex { $0.id == currentItem(in: store)?.id } ?? 0
         let next = (cur + delta + items.count) % items.count
         let target = items[next].id
         flushCommit()
-        currentItemId = store.visibleItems.contains { $0.id == target } ? target : store.visibleItems.first?.id
+        currentItemId = store.filteredItems.contains { $0.id == target } ? target : store.filteredItems.first?.id
     }
 }

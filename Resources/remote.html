@@ -73,6 +73,13 @@
   button.danger { color: #ffb4b4; border-color: rgba(240,106,106,.35); }
   button.mini { background: var(--row); border: 1px solid var(--border); border-radius: 9px; padding: 5px 9px; font-size: 12px; font-weight: 600; color: var(--dim); flex: none; }
   button.mini.danger { color: #ffb4b4; }
+  .filters { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; overflow-x: auto; }
+  .filters button.f { border: 1px solid var(--border); background: var(--row); color: var(--dim); border-radius: 99px; padding: 6px 11px; font-size: 13px; font-weight: 600; flex: none; }
+  .filters button.f.on { background: #fff; color: #000; border-color: #fff; }
+  .filters button.f span { margin-left: 5px; opacity: .6; font-variant-numeric: tabular-nums; }
+  .filters .clear-all { margin-left: auto; }
+  .title-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+  .title-row .title { flex: 1; margin-bottom: 0; }
   .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .empty { color: var(--dim); text-align: center; padding: 36px 10px; }
   .sess { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--row); border-radius: 12px; margin-bottom: 6px; cursor: pointer; }
@@ -176,6 +183,7 @@
     <button id="tabInbox" data-act="tab" data-id="inbox">Inbox<b id="inboxCount"></b></button>
     <button id="tabAgents" data-act="tab" data-id="agents">Agents</button>
   </nav>
+  <div id="filters" class="filters" hidden></div>
   <main id="inbox"></main>
   <section id="agents" hidden></section>
   <button id="fab" class="fab" data-act="new" aria-label="New agent" hidden>+</button>
@@ -234,6 +242,7 @@ let loaded = false;
 let caps = new Set(['read', 'answer']);
 let filter = keep('relay.ws') || '';
 let tab = keep('relay.tab') === 'agents' ? 'agents' : 'inbox';
+let kind = ['asking', 'done'].includes(keep('relay.kind')) ? keep('relay.kind') : 'all';   // inbox filter
 let seen = new Set();
 let drafts = {};        // itemId -> reply text
 let progress = {};      // itemId -> { step, collected, multi:Set }
@@ -486,6 +495,22 @@ function renderFilter() {
   sel.value = filter;
 }
 
+// Asking: questions, permission prompts and MCP input requests (the Mac says which). Done: the rest.
+const asking = (i) => i.asking ?? (i.kind === 'question' || i.kind === 'permission');
+const kindMatch = (i, k) => k === 'all' || (k === 'asking') === asking(i);
+function inboxItems() { return state.items.filter(i => !filter || i.workspaceId === filter); }
+
+function renderFilters() {
+  const all = inboxItems();
+  const el = $('#filters');
+  const doneHere = all.filter(i => !asking(i) && kindMatch(i, kind));
+  const chips = [['all', 'All'], ['asking', 'Asking'], ['done', 'Done']].map(([k, l]) =>
+    `<button class="f ${kind === k ? 'on' : ''}" data-act="kind" data-id="${k}">${l}<span>${all.filter(i => kindMatch(i, k)).length}</span></button>`).join('');
+  const html = chips + (doneHere.length > 1 ? `<button class="mini clear-all" data-act="clear-done">Clear ${doneHere.length} done</button>` : '');
+  if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
+  el.hidden = tab !== 'inbox' || !all.length;
+}
+
 function renderChrome() {
   const items = state.items.filter(i => !filter || i.workspaceId === filter);
   const sessions = state.sessions.filter(s => s.status !== 'ended' && (!filter || s.workspaceId === filter));
@@ -494,6 +519,7 @@ function renderChrome() {
   $('#tabAgents').textContent = sessions.length ? 'Agents · ' + sessions.length : 'Agents';
   $('#fab').hidden = !(caps.has('control') && tab === 'agents');
   $('#deviceBtn').hidden = LAN || !state.device;
+  renderFilters();
   if (openSessionId) renderSheetHead();
 }
 
@@ -501,11 +527,13 @@ function render() {
   renderFilter();
   renderChrome();
   renderGuide();
-  const items = state.items.filter(i => !filter || i.workspaceId === filter);
+  const all = inboxItems();
+  const items = all.filter(i => kindMatch(i, kind));
   const inbox = $('#inbox');
   const active = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.item : null;
   // Only touch the DOM when something changed, so buttons never move under a finger.
-  const html = items.length ? items.map(cardHTML).join('') : '<div class="card empty">Nothing is waiting on you.</div>';
+  const none = !all.length ? 'Nothing is waiting on you.' : kind === 'asking' ? 'No agent is asking you anything.' : 'No finished turns to show.';
+  const html = items.length ? items.map(cardHTML).join('') : `<div class="card empty">${none}</div>`;
   if (inbox.dataset.sig !== html) { inbox.innerHTML = html; inbox.dataset.sig = html; }
   if (active) {
     const el = inbox.querySelector(`input[data-item="${CSS.escape(active)}"]`);
@@ -568,11 +596,11 @@ function cardHTML(it) {
     });
   } else {
     if (it.body) body += `<div class="msg md" style="white-space:normal">${md(it.body)}</div>`;
-    body += `<div class="actions" style="margin:-4px 0 10px"><button class="ghost" data-act="dismiss" data-id="${id}">Done</button></div>`;
   }
   const ph = it.kind === 'permission' ? `Tell @${esc(s.handle)} what to do instead…` : it.kind === 'question' ? 'Or type an answer…' : `Reply to @${esc(s.handle)}…`;
   return `<div class="card" data-card="${id}">
-    <div class="title">${esc(it.title || 'Inbox')}</div>
+    <div class="title-row"><div class="title">${esc(it.title || 'Inbox')}</div>
+      <button class="mini" data-act="dismiss" data-id="${id}" aria-label="Clear from inbox">Clear</button></div>
     <div class="agent" data-act="session" data-id="${esc(it.sessionId)}"><div class="avatar">✻<b style="background:${statusColor[s.status] || '#888'}"></b></div>
       <div style="min-width:0"><div class="handle">@${esc(s.handle)} ${heatBadge(s)}</div><div class="sub">${esc(s.path)} · ${word}</div></div>
       ${chip(ws(it.workspaceId))}</div>
@@ -640,6 +668,26 @@ function reply(id) {
   post({ action: 'reply', itemId: id, text }, 'Sent');
 }
 
+// MARK: Clearing
+
+function clearItem(id) {
+  const it = item(id); if (!it) return;
+  // An open question stays open in the agent's terminal; say so before it leaves the phone.
+  if (asking(it)) {
+    const s = sess(it.sessionId);
+    if (!confirm(`Clear this from the inbox? @${s ? s.handle : 'the agent'} keeps waiting until you answer in its terminal.`)) return;
+  }
+  delete drafts[id];
+  post({ action: 'dismiss', itemId: id }, 'Cleared');
+}
+
+function clearDone() {
+  const ids = inboxItems().filter(i => !asking(i) && kindMatch(i, kind)).map(i => i.id);
+  if (!ids.length) return;
+  ids.forEach(i => delete drafts[i]);
+  post({ action: 'clear', itemIds: ids }, ids.length === 1 ? 'Cleared' : `Cleared ${ids.length}`);
+}
+
 // MARK: Deep links (#item=, #session=) from notifications
 
 function handleHash() {
@@ -653,6 +701,9 @@ function handleHash() {
 
 function focusItem() {
   if (!pendingItem || !loaded) return;
+  // A notification's card hidden by the filter: show everything so it can be found.
+  const it = item(pendingItem);
+  if (it && !kindMatch(it, kind)) { kind = 'all'; keep('relay.kind', kind); render(); }
   const el = document.querySelector(`[data-card="${CSS.escape(pendingItem)}"]`);
   if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800); }
   else toast('Already answered');
@@ -1090,7 +1141,9 @@ document.addEventListener('click', (e) => {
     case 'choose': choose(id, i); break;
     case 'submit-multi': submitMulti(id); break;
     case 'permit': post({ action: 'permission', itemId: id, index: i }, 'Sent'); break;
-    case 'dismiss': post({ action: 'dismiss', itemId: id }, 'Cleared'); break;
+    case 'dismiss': clearItem(id); break;
+    case 'clear-done': clearDone(); break;
+    case 'kind': kind = id; keep('relay.kind', kind); render(); break;
     case 'session': openSession(id); break;
     case 'close-session': closeSession(); break;
     case 'close': hideSheet(id); break;

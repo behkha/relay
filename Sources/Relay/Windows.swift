@@ -122,6 +122,12 @@ final class OverlayController: NSObject {
         store.$toast.receive(on: RunLoop.main).sink { [weak self] _ in
             DispatchQueue.main.async { self?.layoutCard() }
         }.store(in: &bag)
+        // A new filter: keep the shown item if it still matches, else show the filter's first one.
+        store.$inboxFilter.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
+            guard let self, self.ui.cardOpen else { return }
+            if self.ui.pinnedItem(in: self.store) == nil { self.ui.currentItemId = self.store.filteredItems.first?.id }
+            DispatchQueue.main.async { self.layoutCard() }
+        }.store(in: &bag)
         store.itemArrived.receive(on: RunLoop.main).sink { [weak self] item in self?.itemArrived(item) }.store(in: &bag)
 
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
@@ -194,10 +200,13 @@ final class OverlayController: NSObject {
         if ui.cardOpen {
             if ui.pinnedItem(in: store) == nil {
                 // The shown item was resolved (or none was pinned yet): pin the next one.
-                ui.currentItemId = store.visibleItems.first?.id
-                if store.visibleItems.isEmpty && !ui.showAgentsList {
+                // Close once the filter has nothing left, but not when it was already empty
+                // (you picked a filter with nothing in it, and the card shows that).
+                let hadItem = ui.currentItemId != nil
+                ui.currentItemId = store.filteredItems.first?.id
+                if hadItem && store.filteredItems.isEmpty && !ui.showAgentsList {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
-                        guard let self, self.store.visibleItems.isEmpty, !self.ui.showAgentsList else { return }
+                        guard let self, self.store.filteredItems.isEmpty, !self.ui.showAgentsList else { return }
                         self.closeCard()
                     }
                 }
@@ -239,8 +248,13 @@ final class OverlayController: NSObject {
     func openCard(focus: Bool, itemId: String? = nil) {
         guard isPillVisible else { return }
         closeSide()
-        let requested = itemId.flatMap { id in store.visibleItems.first { $0.id == id }?.id }
-        ui.currentItemId = requested ?? ui.pinnedItem(in: store)?.id ?? store.visibleItems.first?.id
+        // An item the filter hides (a question while showing Done): show everything so it can appear.
+        if let id = itemId, store.visibleItems.contains(where: { $0.id == id }),
+           !store.filteredItems.contains(where: { $0.id == id }) {
+            store.inboxFilter = .all
+        }
+        let requested = itemId.flatMap { id in store.filteredItems.first { $0.id == id }?.id }
+        ui.currentItemId = requested ?? ui.pinnedItem(in: store)?.id ?? store.filteredItems.first?.id
         ui.showAgentsList = store.visibleItems.isEmpty
         let wasOpen = ui.cardOpen
         ui.cardOpen = true
@@ -275,10 +289,7 @@ final class OverlayController: NSObject {
     private func itemArrived(_ item: InboxItem) {
         guard ui.openCardWhenAsked, item.isActionable,
               store.workspaceFilter == nil || store.workspaceFilter == item.workspaceId else { return }
-        if !ui.cardOpen {
-            ui.currentItemId = item.id
-            openCard(focus: false)
-        }
+        if !ui.cardOpen { openCard(focus: false, itemId: item.id) }
     }
 
     private func openSession(_ s: AgentSession) {

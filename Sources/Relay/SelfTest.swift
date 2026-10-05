@@ -22,6 +22,7 @@ enum SelfTest {
         }
         defer { try? FileManager.default.removeItem(at: sandbox) }
         harness()
+        inbox()
         remoteAPI()
         devices()
         tailscale()
@@ -56,6 +57,47 @@ enum SelfTest {
 
     private static func harness() {
         check("harness: a true check passes", 1 + 1 == 2)
+    }
+
+    // MARK: - Inbox
+
+    private static func inbox() {
+        var ask = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .question, title: "Rounding", body: "Which?")
+        ask.toolName = "AskUserQuestion"
+        ask.isLive = true
+        ask.questions = [AgentQuestion(question: "Which?", header: "Rounding", options: [], multiSelect: false)]
+        var bash = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .permission, title: "Run", body: "$ ls")
+        bash.toolName = "Bash"
+        bash.isLive = true
+        bash.toolInputJSON = Store.jsonString(["command": "ls"])
+        var bash2 = bash
+        bash2.id = "bash2"
+        bash2.toolInputJSON = Store.jsonString(["command": "pwd"])
+        var fallback = bash
+        fallback.id = "fallback"
+        fallback.isLive = false
+        let done = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .finished, title: "Done", body: "ok")
+        let elicit = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .waiting, title: Store.needsInputTitle, body: "Pick")
+        let idle = InboxItem(sessionId: "s1", workspaceId: "w1", kind: .waiting, title: "Waiting for you", body: "")
+
+        func answered(_ items: [InboxItem], _ tool: String?, _ input: [String: Any]?, session: String = "s1") -> Set<String> {
+            Store.answeredElsewhere(items: items, sessionId: session, tool: tool, input: input)
+        }
+        let answeredInput: [String: Any] = ["questions": [["question": "Which?"]], "answers": ["Which?": "Half-even"]]
+        check("inbox: a question answered in the terminal closes its card",
+              answered([ask, done], "AskUserQuestion", answeredInput) == [ask.id])
+        check("inbox: another tool finishing leaves the question open", answered([ask], "Read", ["file_path": "/x"]).isEmpty)
+        check("inbox: another agent's tool leaves it open", answered([ask], "AskUserQuestion", answeredInput, session: "s2").isEmpty)
+        check("inbox: parallel prompts for one tool are told apart by input",
+              answered([bash, bash2], "Bash", ["command": "pwd"]) == ["bash2"])
+        check("inbox: fallback cards are left to their own clean-up", answered([fallback], "Bash", ["command": "ls"]).isEmpty)
+        check("inbox: no tool name, nothing closes", answered([ask], nil, nil).isEmpty)
+
+        check("inbox: Asking holds questions, prompts and MCP input requests",
+              [ask, bash, elicit].allSatisfy(InboxFilter.asking.matches) && ![done, idle].contains(where: InboxFilter.asking.matches))
+        check("inbox: Done holds finished and idle agents",
+              [done, idle].allSatisfy(InboxFilter.done.matches) && ![ask, bash, elicit].contains(where: InboxFilter.done.matches))
+        check("inbox: All holds everything", [ask, bash, elicit, done, idle].allSatisfy(InboxFilter.all.matches))
     }
 
     // MARK: - Remote API
@@ -97,6 +139,7 @@ enum SelfTest {
         check("api: snapshot adds caps, heat and last activity",
               snap["caps"] as? [String] == ["read", "answer"] && sess["cpu"] as? Int == 312
               && sess["heat"] as? String == "hot" && sess["updatedAt"] as? Double == 1_700_000_000_000)
+        check("api: snapshot marks which items ask you something", item["asking"] as? Bool == true)
         check("api: snapshot is valid JSON", JSONSerialization.isValidJSONObject(snap))
     }
 

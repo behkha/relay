@@ -224,6 +224,33 @@ struct InboxItem: Identifiable, Codable, Hashable {
     var isActionable: Bool { kind == .question || kind == .permission }
 }
 
+/// Which inbox items the card and the phone list show.
+enum InboxFilter: String, CaseIterable, Codable {
+    case all
+    case asking     // questions, permission prompts and MCP input requests: the agent is blocked on you
+    case done       // finished turns and idle agents
+
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .asking: return "Asking"
+        case .done: return "Done"
+        }
+    }
+
+    static func isAsking(_ item: InboxItem) -> Bool {
+        item.isActionable || (item.kind == .waiting && item.title == Store.needsInputTitle)
+    }
+
+    func matches(_ item: InboxItem) -> Bool {
+        switch self {
+        case .all: return true
+        case .asking: return Self.isAsking(item)
+        case .done: return !Self.isAsking(item)
+        }
+    }
+}
+
 enum Theme {
     static let blue = Color(hex: "#4C8DFF")
     static let amber = Color(hex: "#E8B04A")

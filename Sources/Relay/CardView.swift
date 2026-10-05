@@ -34,6 +34,7 @@ struct CardView: View {
     private func content(_ item: InboxItem) -> some View {
         let committing = ui.commit?.itemId == item.id
         return VStack(alignment: .leading, spacing: 9) {
+            InboxFilterBar(store: store)
             header(item)
             subheader(item, committing: committing)
             if let p = item.prompt, !p.isEmpty { promptBubble(p) }
@@ -63,7 +64,7 @@ struct CardView: View {
     }
 
     private func header(_ item: InboxItem) -> some View {
-        let items = store.visibleItems
+        let items = store.filteredItems
         let index = items.firstIndex { $0.id == item.id } ?? 0
         return HStack(spacing: 6) {
             Text(title(item))
@@ -408,7 +409,13 @@ struct CardView: View {
                 Spacer()
                 IconButton(systemName: "xmark", size: 10.5, action: onClose)
             }
-            Text("Nothing is waiting on you.").font(look.font(12)).foregroundStyle(Theme.textDim)
+            if store.visibleItems.isEmpty {
+                Text("Nothing is waiting on you.").font(look.font(12)).foregroundStyle(Theme.textDim)
+            } else {
+                InboxFilterBar(store: store)
+                Text(store.inboxFilter == .asking ? "No agent is asking you anything." : "No finished turns to show.")
+                    .font(look.font(12)).foregroundStyle(Theme.textDim)
+            }
             if store.visibleSessions.isEmpty {
                 Text("Start Claude Code in any terminal or the Claude app. Agents show up here on their own.")
                     .font(look.font(11)).foregroundStyle(Theme.textFaint)
@@ -416,6 +423,49 @@ struct CardView: View {
             }
         }
         .padding(14)
+    }
+}
+
+/// All · Asking · Done, with counts. Picks which inbox items the card pages through.
+struct InboxFilterBar: View {
+    @ObservedObject var store: Store
+    @ObservedObject private var look = Appearance.shared
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(InboxFilter.allCases, id: \.self) { f in
+                FilterChip(label: f.label, count: store.count(f), selected: store.inboxFilter == f) {
+                    store.inboxFilter = f
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct FilterChip: View {
+    var label: String
+    var count: Int
+    var selected: Bool
+    var action: () -> Void
+    @ObservedObject private var look = Appearance.shared
+    @ViewState private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(label).font(look.font(10.5, .semibold))
+                Text("\(count)").font(look.font(10, .medium).monospacedDigit())
+                    .foregroundStyle(selected ? Color.black.opacity(0.55) : Theme.textFaint)
+            }
+            .foregroundStyle(selected ? Color.black : (hover ? Color.white : Theme.textDim))
+            .padding(.horizontal, 8).padding(.vertical, 3.5)
+            .background(Capsule().fill(selected ? Color.white : Color.white.opacity(hover ? 0.1 : 0.06)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .onHover { hover = $0 }
     }
 }
 

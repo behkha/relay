@@ -149,7 +149,7 @@ final class RemoteAPI {
             var d: [String: Any] = [
                 "id": it.id, "sessionId": it.sessionId, "workspaceId": it.workspaceId, "kind": it.kind.rawValue,
                 "title": it.title, "body": String(it.body.prefix(4000)), "createdAt": it.createdAt.timeIntervalSince1970 * 1000,
-                "toolName": it.toolName ?? "", "live": it.isLive,
+                "toolName": it.toolName ?? "", "live": it.isLive, "asking": InboxFilter.isAsking(it),
             ]
             if it.kind == .permission { d["options"] = KeyActions.permissionOptions(it).map { $0.0 } }
             d["questions"] = it.questions.map { q in
@@ -358,6 +358,11 @@ final class RemoteAPI {
         if action == "message", let sid = body["sessionId"] as? String, let text = body["text"] as? String {
             store.sendText(text, toSession: sid)
             return ["ok": true]
+        }
+        if action == "clear" {
+            // Bulk clear from the phone: only finished and idle cards, never an open question.
+            let ids = Set(body["itemIds"] as? [String] ?? [])
+            return ["ok": true, "cleared": store.clearDone(ids: ids)]
         }
         guard let id = body["itemId"] as? String, let item = store.items.first(where: { $0.id == id }) else {
             return ["ok": false, "error": "That question was already answered."]

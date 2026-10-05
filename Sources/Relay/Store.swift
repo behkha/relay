@@ -20,6 +20,10 @@ final class Store: ObservableObject {
     @Published var workspaceFilter: String? {
         didSet { UserDefaults.standard.set(workspaceFilter, forKey: "workspaceFilter") }
     }
+    /// What the card shows: every item, only the ones asking you something, or only finished ones.
+    @Published var inboxFilter: InboxFilter = .all {
+        didSet { UserDefaults.standard.set(inboxFilter.rawValue, forKey: "inboxFilter") }
+    }
     @Published var toast: String?
 
     /// Hook requests blocked on a decision, keyed by inbox item id.
@@ -51,6 +55,7 @@ final class Store: ObservableObject {
         DispatchQueue.main.async { [weak self] in self?.refreshTitles() }
         workspaceFilter = UserDefaults.standard.string(forKey: "workspaceFilter")
         if let f = workspaceFilter, !workspaces.contains(where: { $0.id == f }) { workspaceFilter = nil }
+        inboxFilter = UserDefaults.standard.string(forKey: "inboxFilter").flatMap(InboxFilter.init) ?? .all
         livenessTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             self?.pruneDeadSessions()
         }
@@ -65,6 +70,11 @@ final class Store: ObservableObject {
                 return a.createdAt > b.createdAt
             }
     }
+
+    /// The visible items the card pages through, after the inbox filter.
+    var filteredItems: [InboxItem] { visibleItems.filter(inboxFilter.matches) }
+
+    func count(_ filter: InboxFilter) -> Int { visibleItems.filter(filter.matches).count }
 
     var visibleSessions: [AgentSession] {
         sessions.values
@@ -377,8 +387,14 @@ final class Store: ObservableObject {
             if s.status != .waiting { s.status = .working }
 
         case "PostToolUse":
-            // Live cards clear themselves when Claude Code ends their hook; only fallback cards need this.
             clearFallbackCards(sessionId)
+            // The tool ran, so its prompt was answered somewhere else (the terminal or the Claude app).
+            // Claude Code doesn't always end the hook that was waiting on Relay then, so close its card here.
+            let answered = Self.answeredElsewhere(items: items, sessionId: sessionId,
+                                                  tool: payload["tool_name"] as? String,
+                                                  input: payload["tool_input"] as? [String: Any])
+            for id in answered { pending.removeValue(forKey: id)?.respond(.empty) }
+            if !answered.isEmpty { items.removeAll { answered.contains($0.id) } }
             s.status = hasActionable(sessionId) ? .waiting : .working
 
         case "PermissionRequest":
@@ -738,6 +754,22 @@ final class Store: ObservableObject {
         items.removeAll { $0.sessionId == sessionId && $0.isActionable && !$0.isLive }
     }
 
+    /// Live cards whose tool just ran (PostToolUse): their prompt was answered outside Relay.
+    /// Several cards for the same tool (parallel calls) are told apart by their input; a question is
+    /// matched by its question texts, since answering adds `answers` to its input.
+    static func answeredElsewhere(items: [InboxItem], sessionId: String, tool: String?, input: [String: Any]?) -> Set<String> {
+        guard let tool else { return [] }
+        let same = items.filter { $0.sessionId == sessionId && $0.isActionable && $0.isLive && $0.toolName == tool }
+        if same.count <= 1 { return Set(same.map(\.id)) }
+        let input = input ?? [:]
+        if tool == "AskUserQuestion" {
+            let asked = ((input["questions"] as? [[String: Any]]) ?? []).compactMap { $0["question"] as? String }
+            return Set(same.filter { $0.questions.map(\.question) == asked }.map(\.id))
+        }
+        let json = jsonString(input)
+        return Set(same.filter { $0.toolInputJSON == json }.map(\.id))
+    }
+
     private func dropItem(_ id: String) {
         pending.removeValue(forKey: id)
         guard let item = items.first(where: { $0.id == id }) else { return }
@@ -1005,6 +1037,14 @@ final class Store: ObservableObject {
             ex.respond(.empty)  // leave the decision to the terminal
         }
         items.removeAll { $0.id == item.id }
+    }
+
+    /// Clears finished and idle cards in one go (never a question or permission prompt). Returns how many.
+    @discardableResult
+    func clearDone(ids: Set<String>) -> Int {
+        let gone = items.filter { ids.contains($0.id) && !InboxFilter.isAsking($0) }.map(\.id)
+        items.removeAll { gone.contains($0.id) }
+        return gone.count
     }
 
     func focusTerminal(sessionId: String) {
