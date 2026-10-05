@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var overlay: OverlayController!
     private var voice: VoiceController!
     private var remote: RemoteServer!
+    private var access: RemoteAccess!
     private var main: MainWindowController!
     private var statusItem: NSStatusItem!
     private var hotkey: GlobalHotkey?
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         voice = VoiceController(store: store, ui: ui)
         remote = RemoteServer(store: store)
+        access = RemoteAccess(store: store)
         main = MainWindowController(store: store, remote: remote, voice: voice)
         overlay = OverlayController(store: store, ui: ui)
         overlay.onVoice = { [weak self] shot in

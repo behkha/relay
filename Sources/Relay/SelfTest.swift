@@ -24,6 +24,7 @@ enum SelfTest {
         remoteAPI()
         devices()
         tailscale()
+        tailnetDoor()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -416,5 +417,121 @@ enum SelfTest {
         check("tailscale: enable stops at a stopped Tailscale", Tailscale.enable(cli: cli, previousPort: nil) == .failure(.notRunning("Stopped"))
               && calls() == ["status --json"])
         check("tailscale: enable without the CLI says to install it", Tailscale.enable(cli: nil, previousPort: nil) == .failure(.notInstalled))
+    }
+
+    // MARK: - Tailnet door (over real HTTP)
+
+    private struct Reply {
+        var status: Int
+        var headers: [String: String]
+        var body: Data
+        var json: [String: Any] { (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:] }
+    }
+
+    private static let session: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 10
+        return URLSession(configuration: c)
+    }()
+
+    /// Sends one request and keeps the main run loop turning meanwhile, since the server hops to it.
+    private static func http(_ method: String, _ port: UInt16, _ target: String, headers: [String: String] = [:],
+                             body: Data? = nil) -> Reply {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(target)")!)
+        req.httpMethod = method
+        req.httpBody = body
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        var reply: Reply?
+        session.dataTask(with: req) { data, response, _ in
+            let r = response as? HTTPURLResponse
+            var h: [String: String] = [:]
+            for (k, v) in r?.allHeaderFields ?? [:] { h[String(describing: k).lowercased()] = String(describing: v) }
+            let result = Reply(status: r?.statusCode ?? -1, headers: h, body: data ?? Data())
+            DispatchQueue.main.async { reply = result }
+        }.resume()
+        let deadline = Date().addingTimeInterval(15)
+        while reply == nil && Date() < deadline { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02)) }
+        return reply ?? Reply(status: -1, headers: [:], body: Data())
+    }
+
+    /// The headers a phone sends for a signed request (as the page builds them).
+    private static func signedHeaders(_ method: String, _ target: String, body: Data = Data(), key: P256.Signing.PrivateKey,
+                                      device: String, login: String? = "ada@example.com", ts: Date = Date()) -> [String: String] {
+        let r = signedRequest(method, target, body: String(decoding: body, as: UTF8.self), ts: ts, key: key, device: device, login: login)
+        var h = ["X-Relay-Device": r.headers["x-relay-device"]!, "X-Relay-Ts": r.headers["x-relay-ts"]!,
+                 "X-Relay-Sig": r.headers["x-relay-sig"]!]
+        if let login { h["Tailscale-User-Login"] = login }
+        if !body.isEmpty { h["Content-Type"] = "application/json" }
+        return h
+    }
+
+    private static func tailnetDoor() {
+        let store = Store()
+        let devices = DeviceStore(file: Paths.support.appendingPathComponent("devices-door.json"))
+        let door = TailnetServer(api: RemoteAPI(store: store), devices: devices)
+        var allow = true
+        var asked: [(String, String, String)] = []
+        door.confirmPairing = { name, login, fingerprint, done in
+            asked.append((name, login, fingerprint))
+            DispatchQueue.main.async { done(allow) }
+            return {}
+        }
+        door.notify = { _ in }
+        do { try door.start(port: 0) } catch {
+            check("door: listens on an ephemeral loopback port", false); return
+        }
+        defer { door.stop() }
+        let port = door.port
+        check("door: listens on an ephemeral loopback port", port > 0)
+
+        let second = TailnetServer(api: RemoteAPI(store: store), devices: devices)
+        check("door: a busy port is an error, never a fallback", (try? second.start(port: port)) == nil && !second.isRunning)
+
+        let page = http("GET", port, "/")
+        check("door: the page is served without a device", page.status == 200
+              && page.headers["content-security-policy"]?.contains("frame-ancestors 'none'") == true
+              && page.headers["x-frame-options"] == "DENY")
+        check("door: the API needs a signature", http("GET", port, "/api/state").status == 401
+              && http("POST", port, "/api/answer", body: Data("{}".utf8)).status == 401)
+        check("door: Funnel traffic is refused", http("GET", port, "/", headers: ["Tailscale-Funnel-Request": "?1"]).status == 403)
+
+        let key = P256.Signing.PrivateKey()
+        let pub = key.publicKey.x963Representation.base64URLEncodedString()
+        func pairBody(_ code: String) -> Data {
+            try! JSONSerialization.data(withJSONObject: ["code": code, "publicKey": pub, "deviceName": "Test iPhone"])
+        }
+        let code = devices.newPairingCode()
+        check("door: pairing with a wrong code is refused",
+              http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"], body: pairBody("nope")).status == 401)
+        check("door: pairing that didn't come through Tailscale Serve is refused",
+              http("POST", port, "/api/pair", body: pairBody(code)).status == 401 && asked.isEmpty)
+        let paired = http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"], body: pairBody(code))
+        let deviceId = paired.json["deviceId"] as? String ?? ""
+        check("door: pairing asks on the Mac and returns the device", paired.status == 200 && devices.device(deviceId) != nil
+              && asked.count == 1 && asked.first?.1 == "ada@example.com"
+              && asked.first?.2 == TailnetServer.fingerprint(pub) && asked.first?.2.count == 9)
+        check("door: a pairing code works only once",
+              http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"], body: pairBody(code)).status == 401)
+
+        let state = http("GET", port, "/api/state", headers: signedHeaders("GET", "/api/state", key: key, device: deviceId))
+        check("door: a signed request gets the full API", state.status == 200
+              && state.json["caps"] as? [String] == ["read", "answer", "control"])
+        check("door: a request updates last seen", devices.device(deviceId)?.lastSeen != nil)
+        let replayed = signedHeaders("GET", "/api/session?id=nope", key: key, device: deviceId)
+        let first = http("GET", port, "/api/session?id=nope", headers: replayed)
+        check("door: the signature covers the query", first.status == 404 && first.json["ok"] as? Bool == false)
+        check("door: a replayed request is refused", http("GET", port, "/api/session?id=nope", headers: replayed).status == 401)
+        check("door: another Tailscale login is refused", http("GET", port, "/api/state",
+              headers: signedHeaders("GET", "/api/state", key: key, device: deviceId, login: "eve@example.com")).status == 401)
+        var funnel = signedHeaders("GET", "/api/state", key: key, device: deviceId)
+        funnel["Tailscale-Funnel-Request"] = "?1"
+        check("door: Funnel traffic is refused even when signed", http("GET", port, "/api/state", headers: funnel).status == 403)
+
+        allow = false
+        let denyCode = devices.newPairingCode()
+        let other = P256.Signing.PrivateKey().publicKey.x963Representation.base64URLEncodedString()
+        let denied = http("POST", port, "/api/pair", headers: ["Tailscale-User-Login": "ada@example.com"],
+                          body: try! JSONSerialization.data(withJSONObject: ["code": denyCode, "publicKey": other, "deviceName": "x"]))
+        check("door: pairing denied on the Mac stores nothing", denied.status == 403 && devices.active.count == 1)
     }
 }

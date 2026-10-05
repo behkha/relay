@@ -25,7 +25,8 @@ final class RemoteAPI {
         }
     }
 
-    func handle(_ req: HTTPRequest, _ ex: HTTPExchange, caps: Set<Capability>) {
+    /// `device` is the paired device that signed the request (tailnet door only).
+    func handle(_ req: HTTPRequest, _ ex: HTTPExchange, caps: Set<Capability>, device: Device? = nil) {
         // Routes a door doesn't allow look the same as routes that don't exist.
         guard let need = Self.capability(req.method, req.path), caps.contains(need) else {
             ex.respond(.notFound); return

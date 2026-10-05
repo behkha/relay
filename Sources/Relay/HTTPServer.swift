@@ -54,6 +54,8 @@ final class HTTPServer {
     private let maxBody: Int
     /// Optional gate on the peer address, checked before anything is parsed.
     var acceptPeer: ((String?) -> Bool)?
+    /// Headers added to every response (a response's own headers win).
+    var defaultHeaders: [String: String] = [:]
     private(set) var port: UInt16 = 0
 
     init(label: String, localOnly: Bool, maxBody: Int = 32 << 20, handler: @escaping Handler) {
@@ -99,6 +101,44 @@ final class HTTPServer {
                 return
             }
             throw failed
+        }
+        listener = l
+    }
+
+    /// Starts on exactly this port (0 = any free one) or throws: no fallback, for a port something else
+    /// points at. A local-only server binds 127.0.0.1 itself, so no other process can take that
+    /// address while it runs (a wildcard listener elsewhere can't intercept it either).
+    func start(exactPort: UInt16) throws {
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        let l: NWListener
+        if localOnly {
+            params.requiredInterfaceType = .loopback
+            params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: exactPort) ?? .any)
+            l = try NWListener(using: params)
+        } else {
+            l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: exactPort) ?? .any)
+        }
+        let ready = DispatchSemaphore(value: 0)
+        var failure: Error?
+        l.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                self?.port = l.port?.rawValue ?? 0
+                ready.signal()
+            case .failed(let e), .waiting(let e):
+                failure = e
+                ready.signal()
+            default: break
+            }
+        }
+        l.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
+        l.start(queue: queue)
+        if ready.wait(timeout: .now() + 3) == .timedOut { failure = failure ?? POSIXError(.ETIMEDOUT) }
+        if let failure {
+            l.stateUpdateHandler = nil
+            l.cancel()
+            throw failure
         }
         listener = l
     }
@@ -176,6 +216,7 @@ final class HTTPServer {
         head += "Content-Length: \(resp.body.count)\r\n"
         head += "Cache-Control: no-store\r\n"
         head += "Connection: close\r\n"
+        for (k, v) in defaultHeaders where resp.extraHeaders[k] == nil { head += "\(k): \(v)\r\n" }
         for (k, v) in resp.extraHeaders { head += "\(k): \(v)\r\n" }
         head += "\r\n"
         var out = Data(head.utf8)
