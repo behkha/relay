@@ -12,7 +12,7 @@ so you can stop `⌘-Tab`-ing through 14 terminal tabs like it's 1997.
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white)
 ![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)
-![Lines of Swift: ~12k](https://img.shields.io/badge/lines_of_Swift-~12k-blue)
+![Lines of Swift: ~13k](https://img.shields.io/badge/lines_of_Swift-~13k-blue)
 ![Electron: no](https://img.shields.io/badge/Electron-nope-lightgrey)
 
 <br><br>
@@ -73,6 +73,8 @@ A glass card that pops open by itself the moment an agent asks something. The he
 - **Permission prompts**: the exact option set Claude Code offers (Yes / Yes, and don't ask again for `<rule>` / Yes, and switch to `<mode>` / No). Or just type or say it: "yes" and "go ahead" approve, "no" declines, and anything else declines *and* tells Claude what to do instead.
 - **Finished turns**: the reply rendered as Markdown, a reply box, **Kill agent** (terminal agents) and **Discard**, plus **Next steps**: two likely follow-ups predicted by Claude Haiku on that agent's own account. Click to send, `⤢` to edit first. The helper runs with no tools, none of your hooks or plugins, and treats the agent's text strictly as data.
 
+Filter chips on top, **All · Asking · Done**, each with a count, pick what the card pages through: *Asking* is questions, permission prompts and MCP input requests; *Done* is finished turns and idle agents. The pill's badge still counts everything waiting on you, and a new question that the filter would hide flips it back to All, so nothing blocks in silence.
+
 ### Undo, because humans are non-deterministic
 
 Every answer, message, discard or kill runs after a two-second `esc to undo` bar. It's a write-ahead log for your bad decisions.
@@ -99,13 +101,13 @@ Double-tap `Option` (or click the mic). A small bar opens next to the pill and t
 
 ### Phone
 
-The **Phone** tab serves the inbox to any browser on the same Wi‑Fi. Scan the QR code, add it to your Home Screen, approve `rm -rf node_modules` from the couch. Tap an agent to read its conversation and message it.
+The **Phone** tab serves the inbox to any browser on the same Wi‑Fi. Scan the QR code, add it to your Home Screen, approve `rm -rf node_modules` from the couch. Tap an agent to read its conversation and message it. The inbox has the same **All · Asking · Done** filters as the card, a **Clear** button on every card, and **Clear N done** to sweep finished turns in one tap. Clearing an open question only takes it off the list (the phone asks first); the agent keeps waiting for an answer in its terminal.
 
 Leaving the house? Turn on [Anywhere, over Tailscale](#phone-anywhere-tailscale): the same page over your own tailnet, with lock-screen notifications, and it can start and stop agents too.
 
 ### Answer anywhere
 
-Answered in the terminal instead? The card notices and disappears on its own. Relay is eventually consistent with your keyboard.
+Answered in the terminal or the Claude app instead? The card (and the phone's copy) notices and disappears on its own. Relay is eventually consistent with your keyboard.
 
 ### Settings
 
@@ -247,7 +249,7 @@ The script posts each event to Relay on `127.0.0.1` with a random token from `se
 
 ### Answering
 
-- **Permission prompts and questions** are answered through the `PermissionRequest` hook's decision, so the answer reaches the exact agent no matter how buried its window is. The terminal prompt stays usable at the same time; whoever answers first wins.
+- **Permission prompts and questions** are answered through the `PermissionRequest` hook's decision, so the answer reaches the exact agent no matter how buried its window is. The terminal prompt stays usable at the same time; whoever answers first wins. Answered outside Relay, the card closes when Claude Code ends the waiting hook, or at the latest when that tool's `PostToolUse` arrives (Claude Code doesn't always end the hook); parallel prompts for the same tool are told apart by their input.
 - **Free-text replies** are typed into the agent's terminal through **herdr** (`herdr pane send-text`), **tmux** (`send-keys`), and **Terminal.app** / **iTerm2** (AppleScript, matched by the tab's tty).
 - **Other terminals** (Ghostty, Warp, VS Code…) don't expose a way to target the exact tab, so Relay never types blindly: it copies your message and brings that app forward for you to paste.
 - **Claude desktop app agents** have no terminal, so Relay reaches them via a background `Stop` hook using `asyncRewake` that parks after each turn. Sending a message wakes the agent immediately. If it's busy, the message is queued (a dashed bubble you can cancel) and delivered the instant the turn ends.
