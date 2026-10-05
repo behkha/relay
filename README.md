@@ -12,7 +12,7 @@ so you can stop `⌘-Tab`-ing through 14 terminal tabs like it's 1997.
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white)
 ![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)
-![Lines of Swift: ~9k](https://img.shields.io/badge/lines_of_Swift-~9k-blue)
+![Lines of Swift: ~12k](https://img.shields.io/badge/lines_of_Swift-~12k-blue)
 ![Electron: no](https://img.shields.io/badge/Electron-nope-lightgrey)
 
 <br><br>
@@ -45,6 +45,7 @@ It started as a re-creation of [One](https://getone.one) and then grew one featu
 - [Quick start](#quick-start)
 - [Keyboard map](#keyboard-map)
 - [Workspaces: multi-account without the pain](#workspaces-multi-account-without-the-pain)
+- [Phone, anywhere (Tailscale)](#phone-anywhere-tailscale)
 - [Architecture](#architecture)
 - [Permissions macOS will ask for](#permissions-macos-will-ask-for)
 - [Uninstall](#uninstall)
@@ -100,6 +101,8 @@ Double-tap `Option` (or click the mic). A small bar opens next to the pill and t
 
 The **Phone** tab serves the inbox to any browser on the same Wi‑Fi. Scan the QR code, add it to your Home Screen, approve `rm -rf node_modules` from the couch. Tap an agent to read its conversation and message it.
 
+Leaving the house? Turn on [Anywhere, over Tailscale](#phone-anywhere-tailscale): the same page over your own tailnet, with lock-screen notifications, and it can start and stop agents too.
+
 ### Answer anywhere
 
 Answered in the terminal instead? The card notices and disappears on its own. Relay is eventually consistent with your keyboard.
@@ -129,7 +132,7 @@ What `build.sh` does, in order:
 4. Signs it ad hoc with `codesign`
 5. With `--install`, copies it to `/Applications`
 
-Drop `--install` to just build into `./build/Relay.app`.
+Drop `--install` to just build into `./build/Relay.app`. `scripts/selftest.sh` runs the built-in checks (crypto test vectors, signed requests, Tailscale parsing, launch quoting) without starting the app.
 
 ## Quick start
 
@@ -174,6 +177,49 @@ CLAUDE_CONFIG_DIR=~/.claude-workspaces/work claude
 
 With more than one account, every card shows which workspace the agent belongs to, and the agents list is grouped by account. **Settings → Showing** (or the menu bar icon) filters to all accounts or just one.
 
+## Phone, anywhere (Tailscale)
+
+The LAN page stops working the moment you leave your Wi‑Fi. Turn on **Anywhere, over Tailscale** and the phone reaches Relay through your own [Tailscale](https://tailscale.com) tailnet from any network. Nothing is exposed to the public internet, and there is no third-party relay server.
+
+From anywhere, the phone can:
+
+- get **lock-screen notifications** (Web Push to the Home Screen app) when an agent asks something, finishes, or catches fire, tap one and land on that card;
+- answer questions and permission prompts, reply to and message agents, read their conversations;
+- **start a new agent** (in a detached tmux session) in a folder Relay already knows, in Default, Plan or Accept edits mode, and **stop** agents;
+- see heat and last activity, and read a tmux agent's terminal (read-only).
+
+### Requirements
+
+- Tailscale on the Mac and the phone, signed in to the same tailnet.
+- **MagicDNS** and **HTTPS certificates** turned on for the tailnet (Tailscale admin console → DNS).
+- `tmux` on the Mac to start agents from the phone (`brew install tmux`).
+- iOS 16.4 or later for notifications: iOS delivers Web Push only to apps on the Home Screen.
+
+### Setup
+
+1. **Settings → Phone → Allow phone access over Tailscale.** Relay checks each step and says what to fix. It runs `tailscale serve --bg --https=443 http://127.0.0.1:47902` (8443 when 443 already serves something else; it never overwrites another Serve entry), and turning it off removes only that entry.
+2. **Pair a device** shows a QR code. Scan it with the iPhone Camera.
+3. On the page that opens: **Share → Add to Home Screen**, then open Relay from the Home Screen. It pairs there, and your Mac asks you to **Allow** it. Check that both screens show the same code.
+4. In the app, tap **Enable notifications**.
+
+Optionally pin the folders the phone may start agents in, and turn on **Keep the Mac awake while agents work** (holds off idle sleep only while an agent works or waits on you).
+
+> [!NOTE]
+> iOS keeps a Home Screen app's storage separate from Safari's, so the installed app pairs itself. If it opens without the pairing link, copy the link (from the Safari page, or from the Mac's pairing sheet over Universal Clipboard) and paste it into the app.
+
+### Security model
+
+- **Only your tailnet.** `tailscale serve` terminates TLS with your tailnet's `*.ts.net` certificate and proxies to Relay on `127.0.0.1:47902`: loopback only, a fixed port with no fallback, and Funnel traffic is refused.
+- **Every request is signed.** Each device holds a non-extractable ECDSA P-256 key (WebCrypto, in IndexedDB) and signs method, path and query, a timestamp and the body hash. Relay checks, in order: a paired, unrevoked device; a timestamp within 60 s; the signature; a replay cache (120 s, keyed by the signed message, since an ECDSA signature can be rewritten into a second valid one); and that Tailscale Serve vouched for the same Tailscale login that paired the device. Any local process can reach the port and forge headers, so the login is a second factor; the signature is what grants access. Failures get a bare `401`, and more than 20 a minute starts a 60 s cool-down.
+- **Pairing needs you at the Mac.** The QR carries a single-use 256-bit code, valid five minutes, in the URL fragment so it never reaches a proxy log. Then the Mac asks **Allow / Deny** (Deny is the default). The first pairing fixes the Tailscale account; later pairings must come from it until every device is revoked.
+- **Starting agents is fenced in.** Only in folders Relay already knows for that workspace (where its agents started, plus folders you pinned), only in Default, Plan or Accept edits mode (never `bypassPermissions` or `--dangerously-skip-permissions`), with the prompt passed as one quoted argument after `--`. tmux runs `/bin/sh -c` directly, so neither tmux format expansion nor your login shell's quoting ever sees the prompt or the folder.
+- **The page runs only its own code.** It's served with a Content-Security-Policy that allows its one script by hash, and it can't be framed.
+- **Revocable.** Settings → Phone lists paired devices with **Revoke** and **Revoke all**; a phone can also forget itself. `devices.json` and `vapid.json` are written with mode `0600`.
+
+### Push privacy
+
+Payloads are encrypted for the phone (RFC 8291, `aes128gcm`, CryptoKit). Apple's, Google's or Mozilla's push service sees only ciphertext, its size and timing, Relay's VAPID public key and a contact URL (this repository, not your address). **Hide content in notifications** sends only "An agent needs you". Relay posts only to those three push services, and never follows redirects. When you're at the Mac, a push waits 45 s and is dropped if you answered meanwhile; iOS doesn't allow silent pushes, so the app closes notifications for items you already answered the next time it opens.
+
 ## Architecture
 
 ```text
@@ -186,9 +232,11 @@ With more than one account, every card shows which workspace the agent belongs t
         ├───────────────────────────────────── │  Relay.app   │  NWListener HTTP/1.1
         │  send-keys / AppleScript / herdr     │  (SwiftUI)   │
         └───────────────────────────────────── └──────┬───────┘
-                                                      │ LAN, random token
+                                                      │ LAN :47901, token link
+                                                      │ tailnet: Tailscale Serve → 127.0.0.1:47902,
+                                                      │ requests signed by a paired device
                                                       ▼
-                                               📱 remote.html
+                                               📱 remote.html + Web Push
 ```
 
 ### Hooks
@@ -217,10 +265,18 @@ The script posts each event to Relay on `127.0.0.1` with a random token from `se
 | `TerminalBridge.swift` | tmux / herdr / AppleScript keystroke injection |
 | `Heat.swift` | Process-tree CPU sampler + thermal state + hysteresis |
 | `Voice.swift` | On-device speech recognition and routing |
-| `RemoteServer.swift` | Phone inbox, QR code, LAN token |
+| `RemoteServer.swift` | LAN phone door: token link, QR code |
+| `RemoteAPI.swift` | The phone API both doors share, gated by capability (read, answer, control) |
+| `TailnetServer.swift` | Loopback door for Tailscale Serve, pairing, the on/off controller |
+| `Devices.swift` | Paired devices, pairing codes, signed-request verification |
+| `Tailscale.swift` | `tailscale` CLI: status, Serve on and off |
+| `WebPush.swift` | VAPID, RFC 8291 encryption, delivery rules, when to push |
+| `PowerAssertion.swift` | Keeps the Mac awake while agents work |
+| `SelfTest.swift` | `Relay --self-test`, run by `scripts/selftest.sh` |
 | `CardView.swift`, `PillView.swift`, `Panels.swift` | The UI you actually look at |
 | `Markdown.swift` | A Markdown renderer, because of course |
 | `Resources/relay-hook.sh` | The bridge Claude Code calls |
+| `Resources/remote.html`, `sw.js`, `manifest.webmanifest` | The phone page and its Home Screen app files |
 
 ## Permissions macOS will ask for
 
@@ -238,8 +294,9 @@ The script posts each event to Relay on `127.0.0.1` with a random token from `se
 ## Uninstall
 
 1. Remove each workspace in Relay (this removes its hooks cleanly).
-2. Quit Relay.
-3. Delete the app and its support folder:
+2. If you used Tailscale access, turn it off in Settings → Phone (this removes Relay's `tailscale serve` entry).
+3. Quit Relay.
+4. Delete the app and its support folder:
 
 ```bash
 rm -rf /Applications/Relay.app ~/Library/Application\ Support/Relay
@@ -247,7 +304,7 @@ rm -rf /Applications/Relay.app ~/Library/Application\ Support/Relay
 
 ## Relay vs. One
 
-- **Phone**: a web page on your local network. No native iPhone app, push notifications or cloud relay, so your phone must be on the same network as the Mac. The phone page is served only on your LAN.
+- **Phone**: a web page you add to the Home Screen, not a native iPhone app. On your Wi‑Fi it works with a token link; from anywhere it works over your own Tailscale tailnet, with paired devices, Web Push notifications, and starting and stopping agents. No cloud relay either way.
 - **Scope**: Claude Code only. Codex, OpenCode and Pi aren't supported, and neither are agents on other machines.
 - **AI helpers**: voice routing and next-step suggestions use Claude Haiku through your own Claude Code login, with no tools.
 - **Workspaces**: multiple Claude accounts, fully isolated. This is the reason Relay exists.
