@@ -44,6 +44,10 @@
   .tabs button.on { background: #2a2a2e; color: var(--text); }
   .tabs b { margin-left: 6px; font-size: 11.5px; color: #000; background: var(--amber); border-radius: 99px; padding: 1px 6px; font-weight: 700; }
   .tabs b:empty { display: none; }
+  .slide-l { animation: slide-l .18s ease-out; } .slide-r { animation: slide-r .18s ease-out; }
+  @keyframes slide-l { from { transform: translateX(28px); opacity: .4; } to { transform: none; opacity: 1; } }
+  @keyframes slide-r { from { transform: translateX(-28px); opacity: .4; } to { transform: none; opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .slide-l, .slide-r { animation: none; } }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-bottom: 12px; }
   .card.flash { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(232,176,74,.35); }
   .title { font-weight: 650; font-size: 15px; margin-bottom: 10px; }
@@ -612,15 +616,51 @@ function cardHTML(it) {
   </div>`;
 }
 
-function setTab(t) {
+const tabScroll = {};   // each tab keeps its own scroll position
+function setTab(t, slide) {
+  const prev = tab;
   tab = t === 'agents' ? 'agents' : 'inbox';
   keep('relay.tab', tab);
+  if (prev !== tab) tabScroll[prev] = scrollY;
   $('#inbox').hidden = tab !== 'inbox';
   $('#agents').hidden = tab !== 'agents';
   $('#tabInbox').classList.toggle('on', tab === 'inbox');
   $('#tabAgents').classList.toggle('on', tab === 'agents');
   renderChrome();
+  if (prev !== tab) {
+    scrollTo(0, tabScroll[tab] || 0);
+    if (slide) {
+      const el = $('#' + tab);
+      el.classList.remove('slide-l', 'slide-r');
+      void el.offsetWidth;   // restart the animation
+      el.classList.add(slide);
+    }
+  }
 }
+
+// Swipe left for Agents, right for Inbox. Not from the screen edges (iOS uses those for back),
+// not inside fields or anything that scrolls sideways, and not while a sheet is open.
+let swipe = null;
+document.addEventListener('touchstart', (e) => {
+  swipe = null;
+  if (e.touches.length !== 1 || $('#app').hidden || document.querySelector('.sheet.on')) return;
+  const t = e.touches[0];
+  if (t.clientX < 24 || t.clientX > innerWidth - 24) return;
+  if (e.target.closest('input, textarea, select, pre, table, .code, .filters, .term')) return;
+  swipe = { x: t.clientX, y: t.clientY, at: Date.now() };
+}, { passive: true });
+document.addEventListener('touchmove', (e) => { if (swipe && e.touches.length !== 1) swipe = null; }, { passive: true });
+document.addEventListener('touchcancel', () => { swipe = null; }, { passive: true });
+document.addEventListener('touchend', (e) => {
+  if (!swipe) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+  const quick = Date.now() - swipe.at < 700;
+  swipe = null;
+  if (!quick || Math.abs(dx) < 60 || Math.abs(dx) < 1.8 * Math.abs(dy)) return;
+  if (dx < 0 && tab === 'inbox') setTab('agents', 'slide-l');
+  else if (dx > 0 && tab === 'agents') setTab('inbox', 'slide-r');
+}, { passive: true });
 
 // MARK: Answers
 
