@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             else { self.voice.start(target: self.ui.cardOpen ? self.ui.currentItem(in: self.store) : nil, screenshot: shot) }
         }
         overlay.onVoiceReply = { [weak self] item in self?.voice.start(target: item, screenshot: false) }
-        voice.anchor = { [weak self] in self?.overlay.anchorFrame }
+        voice.anchor = { [weak self] in self?.overlay.talkAnchor }
         overlay.onHome = { [weak self] in self?.main.show() }
         overlay.phoneOn = { [weak self] in (self?.remote.enabled ?? false) || (self?.access.enabled ?? false) }
         overlay.onTalkTo = { [weak self] sessionId in self?.voice.start(sessionId: sessionId) }
@@ -82,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if Demo.isOn {
-            Demo.run(store: store, ui: ui, overlay: overlay)
+            Demo.run(store: store, ui: ui, overlay: overlay, voice: voice)
             return
         }
 

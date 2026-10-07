@@ -579,6 +579,7 @@ final class Store: ObservableObject {
                 if let i = self.items.firstIndex(where: { $0.id == itemId }) {
                     if let p = summary.prompt, !p.isEmpty { self.items[i].prompt = p }
                     self.items[i].activity = summary.activity
+                    if self.items[i].isActionable { self.items[i].said = summary.said }
                 }
             }
         }

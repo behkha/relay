@@ -220,6 +220,7 @@ struct InboxItem: Identifiable, Codable, Hashable {
     // Context read from the transcript when the item arrives.
     var prompt: String?             // the instruction this turn started from
     var activity: String?           // "Explored · Read cart.js · Ran tests"
+    var said: String?               // what the agent wrote this turn before it asked
     var nextSteps: [String] = []
     var nextStepsState: NextStepsState = .none
 
@@ -254,18 +255,25 @@ enum InboxFilter: String, CaseIterable, Codable {
 }
 
 enum Theme {
-    static let blue = Color(hex: "#4C8DFF")
-    static let amber = Color(hex: "#E8B04A")
-    static let green = Color(hex: "#3DBE7A")
+    static let blue = Color(hex: "#0A84FF")
+    static let amber = Color(hex: "#F2B33D")
+    static let green = Color(hex: "#30D158")
+    static let red = Color(hex: "#FF6961")
     static let claude = Color(hex: "#D97757")
-    static let card = Color(hex: "#1B1B1D")
+    /// Solid panel fill (card, agents list, menus): near-black, no blur.
+    static let card = Color(hex: "#141414")
     static let cardBorder = Color.white.opacity(0.08)
-    static let row = Color.white.opacity(0.05)
+    static let row = Color.white.opacity(0.055)
     static let rowBorder = Color.white.opacity(0.07)
     static let textDim = Color.white.opacity(0.55)
     static let textFaint = Color.white.opacity(0.38)
-    static let selectedFill = Color(hex: "#1F3A2C")
-    static let selectedBorder = Color(hex: "#3DBE7A").opacity(0.55)
+    /// Your instruction, right-aligned in the card.
+    static let promptBubble = Color(hex: "#13467E")
+    /// The agent's words, left-aligned in the card.
+    static let agentBubble = Color(hex: "#262626")
+    /// A picked option, just before it is sent.
+    static let selectedFill = Color(hex: "#143A20")
+    static let selectedBorder = Color(hex: "#30D158").opacity(0.55)
 }
 
 extension Color {

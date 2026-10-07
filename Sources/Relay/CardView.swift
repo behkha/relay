@@ -15,15 +15,20 @@ struct CardView: View {
         Group {
             if let item = ui.currentItem(in: store) {
                 content(item).id(item.id)
+                    .transition(.opacity)
                     .onAppear { if item.kind == .finished { store.requestNextSteps(item.id) } }
             } else {
                 emptyState
             }
         }
-        .frame(width: 344 * look.textScale, alignment: .leading)
-        .background(Glass())
-        .shadow(color: .black.opacity(0.45), radius: 20, y: 8)
-        .padding(16)
+        .animation(.easeOut(duration: 0.16), value: ui.currentItem(in: store)?.id)
+        .frame(width: 360 * look.textScale, alignment: .leading)
+        .background(Glass(cornerRadius: 20))
+        .floatingPanelShadow()
+        // Opens out of the pill: a quick grow from its right edge.
+        .scaleEffect(ui.cardOpen ? 1 : 0.92, anchor: .trailing)
+        .opacity(ui.cardOpen ? 1 : 0)
+        .animation(.spring(response: 0.34, dampingFraction: 0.8), value: ui.cardOpen)
         .preferredColorScheme(.dark)
         .onChange(of: replyFocus) { ui.replyFocused = $0 }
         .onReceive(NotificationCenter.default.publisher(for: .relayFocusReply)) { _ in replyFocus = true }
@@ -33,12 +38,17 @@ struct CardView: View {
 
     private func content(_ item: InboxItem) -> some View {
         let committing = ui.commit?.itemId == item.id
-        return VStack(alignment: .leading, spacing: 9) {
-            InboxFilterBar(store: store)
+        return VStack(alignment: .leading, spacing: 10) {
+            if showsFilterBar { InboxFilterBar(store: store) }
             header(item)
+            if ui.showKeys { KeyMap(finished: !item.isActionable).transition(.opacity) }
             subheader(item, committing: committing)
             if let p = item.prompt, !p.isEmpty { promptBubble(p) }
-            if let a = item.activity, !a.isEmpty { activityLine(a) }
+            if item.isActionable, let said = item.said, !said.isEmpty {
+                agentBubble(said)
+            } else if let a = item.activity, !a.isEmpty, item.isActionable {
+                activityLine(a)
+            }
             switch item.kind {
             case .question: questionBody(item)
             case .permission: permissionBody(item)
@@ -46,10 +56,14 @@ struct CardView: View {
             }
             if committing, let c = ui.commit {
                 CommitBar(commit: c) { ui.undo() }
+                    .transition(.asymmetric(insertion: .scale(scale: 0.97).combined(with: .opacity), removal: .opacity))
             } else {
                 composer(item)
-                actions(item)
-                if item.kind == .finished { nextSteps(item) }
+                if item.isActionable {
+                    HStack { Spacer(); discardButton(item, light: false) }
+                } else {
+                    finishedActions(item)
+                }
             }
             if let toast = store.toast, !committing {
                 Text(toast).font(look.font(10.5, .medium)).foregroundStyle(Color.white.opacity(0.75))
@@ -57,16 +71,22 @@ struct CardView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 12)
-        .animation(.easeOut(duration: 0.14), value: committing)
-        .animation(.easeOut(duration: 0.14), value: ui.questionStep)
+        .padding(.top, 13)
+        .padding(.bottom, 13)
+        .animation(.easeOut(duration: 0.16), value: committing)
+        .animation(.easeOut(duration: 0.16), value: ui.questionStep)
+        .animation(.easeOut(duration: 0.14), value: ui.showKeys)
+    }
+
+    /// The All · Asking · Done chips only earn their row when there is something to filter.
+    private var showsFilterBar: Bool {
+        store.inboxFilter != .all || (store.count(.asking) > 0 && store.count(.done) > 0)
     }
 
     private func header(_ item: InboxItem) -> some View {
         let items = store.filteredItems
         let index = items.firstIndex { $0.id == item.id } ?? 0
-        return HStack(spacing: 6) {
+        return HStack(spacing: 5) {
             Text(title(item))
                 .font(look.font(13.5, .semibold))
                 .foregroundStyle(.white)
@@ -74,41 +94,31 @@ struct CardView: View {
                 .truncationMode(.tail)
             Spacer(minLength: 6)
             if items.count > 1 {
-                if ui.cardIsKey {
-                    Text("\(index + 1) of \(items.count)").font(look.font(10.5, .medium)).foregroundStyle(Theme.textDim)
+                if items.count > 7 {
+                    Text("\(index + 1) of \(items.count)").font(look.font(10.5, .medium).monospacedDigit())
+                        .foregroundStyle(Theme.textDim)
                 } else {
-                    PageDots(count: items.count, index: index)
+                    PageDots(count: items.count, index: index).padding(.trailing, 2)
                 }
-                navButton("chevron.left", key: "J") { ui.move(-1, store: store) }
-                navButton("chevron.right", key: "K") { ui.move(1, store: store) }
+                HeaderButton(systemName: "chevron.left", key: ui.cardIsKey ? "J" : nil) { ui.move(-1, store: store) }
+                HeaderButton(systemName: "chevron.right", key: ui.cardIsKey ? "K" : nil) { ui.move(1, store: store) }
             }
-            HStack(spacing: 3) {
-                IconButton(systemName: "xmark", size: 10.5, action: onClose)
-                if ui.cardIsKey { KeyHint(key: "esc") }
-            }
-            .padding(.trailing, ui.cardIsKey ? 3 : 0)
-            .background(ui.cardIsKey ? Capsule().fill(Color.white.opacity(0.06)) : nil)
+            HeaderButton(systemName: "questionmark", key: nil, filled: true, selected: ui.showKeys) { ui.showKeys.toggle() }
+                .help("Keyboard shortcuts  (?)")
+            HeaderButton(systemName: "xmark", key: ui.cardIsKey ? "esc" : nil, action: onClose)
         }
-    }
-
-    private func navButton(_ icon: String, key: String, action: @escaping () -> Void) -> some View {
-        HStack(spacing: 3) {
-            IconButton(systemName: icon, size: 10.5, action: action)
-            if ui.cardIsKey { KeyHint(key: key) }
-        }
-        .padding(.trailing, ui.cardIsKey ? 3 : 0)
-        .background(ui.cardIsKey ? Capsule().fill(Color.white.opacity(0.06)) : nil)
     }
 
     private func subheader(_ item: InboxItem, committing: Bool) -> some View {
         let s = store.session(for: item)
         let ws = store.workspace(item.workspaceId)
         return HStack(spacing: 7) {
-            AgentMark(status: s?.shownStatus ?? .ready, size: 15)
+            AgentMark(status: s?.shownStatus ?? .ready, size: 14)
             Text([statusPhrase(item, committing: committing), s?.folderName].compactMap { $0 }.joined(separator: " · "))
                 .font(look.font(11.5))
                 .foregroundStyle(Theme.textDim)
                 .lineLimit(1)
+                .contentTransition(.opacity)
             Spacer(minLength: 4)
             if let ws, store.workspaces.count > 1 { WorkspaceChip(workspace: ws) }
         }
@@ -119,14 +129,29 @@ struct CardView: View {
 
     private func promptBubble(_ text: String) -> some View {
         HStack {
-            Spacer(minLength: 36)
+            Spacer(minLength: 40)
             Text(text)
-                .font(look.font(11.5, .medium))
+                .font(look.font(12, .medium))
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .truncationMode(.tail)
-                .padding(.horizontal, 10).padding(.vertical, 5.5)
-                .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color(hex: "#2D6BDB")))
+                .padding(.horizontal, 11).padding(.vertical, 6.5)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.promptBubble))
+        }
+    }
+
+    /// What the agent said before it asked, in a grey bubble on the left.
+    private func agentBubble(_ text: String) -> some View {
+        HStack {
+            Text(MarkdownInline.plain(text))
+                .font(look.font(12))
+                .foregroundStyle(Color.white.opacity(0.92))
+                .lineLimit(3)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.agentBubble))
+            Spacer(minLength: 40)
         }
     }
 
@@ -150,11 +175,10 @@ struct CardView: View {
                 let q = qs[step]
                 Text(q.question).font(look.font(13, .semibold)).foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
+                    .padding(.top, 1).padding(.bottom, 1)
                 VStack(spacing: 5) {
                     ForEach(Array(q.options.enumerated()), id: \.offset) { i, opt in
-                        ChoiceRow(number: i + 1, label: CardLogic.cleanLabel(opt.label), detail: opt.description,
-                                  recommended: CardLogic.isRecommended(opt.label),
+                        ChoiceRow(number: i + 1, label: opt.label, detail: opt.description,
                                   selected: q.multiSelect ? ui.multiSelection.contains(i) : ui.flashSelected == i,
                                   dimmed: ui.flashSelected != nil && ui.flashSelected != i && !q.multiSelect,
                                   danger: false) {
@@ -168,7 +192,7 @@ struct CardView: View {
                         Spacer()
                         Button("Next") { CardLogic.submitMulti(item: item, store: store, ui: ui) }
                             .buttonStyle(PillButtonStyle(prominent: true))
-                .focusable(false)
+                            .focusable(false)
                             .disabled(ui.multiSelection.isEmpty)
                     }
                 }
@@ -186,15 +210,15 @@ struct CardView: View {
                         }
                     }
                 }
-                .padding(8)
+                .padding(9)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.05)))
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.05)))
                 VStack(spacing: 5) {
-                    ChoiceRow(number: 1, label: "Submit answers", detail: nil, recommended: false,
+                    ChoiceRow(number: 1, label: "Submit answers", detail: nil,
                               selected: ui.flashSelected == 0, dimmed: ui.flashSelected == 1, danger: false) {
                         CardLogic.choose(0, item: item, store: store, ui: ui)
                     }
-                    ChoiceRow(number: 2, label: "Cancel", detail: nil, recommended: false,
+                    ChoiceRow(number: 2, label: "Cancel", detail: nil,
                               selected: false, dimmed: ui.flashSelected == 0, danger: false) {
                         CardLogic.choose(1, item: item, store: store, ui: ui)
                     }
@@ -233,12 +257,13 @@ struct CardView: View {
                 }
                 .frame(maxHeight: 84)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 9).fill(Color.black.opacity(0.32)))
+                .padding(9)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.black.opacity(0.45)))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.06), lineWidth: 0.75))
             }
             VStack(spacing: 5) {
                 ForEach(Array(opts.enumerated()), id: \.offset) { i, opt in
-                    ChoiceRow(number: i + 1, label: opt.0, detail: nil, recommended: false,
+                    ChoiceRow(number: i + 1, label: opt.0, detail: nil,
                               selected: ui.flashSelected == i,
                               dimmed: ui.flashSelected != nil && ui.flashSelected != i,
                               danger: opt.1 == .deny) {
@@ -253,17 +278,24 @@ struct CardView: View {
         }
     }
 
+    /// The agent's reply in a grey bubble: short ones hug their text, long ones scroll.
     private func messageBody(_ item: InboxItem) -> some View {
-        Group {
-            if !item.body.isEmpty {
+        let text = item.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let short = text.count <= 120 && !text.contains("\n")
+        return Group {
+            if text.isEmpty {
+                EmptyView()
+            } else if short {
+                agentBubble(text)
+            } else {
                 ScrollView {
                     MarkdownView(text: item.body, fontSize: 12 * look.textScale)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
                 }
                 .frame(maxHeight: 230)
                 .fixedSize(horizontal: false, vertical: true)
-                .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.white.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.agentBubble))
             }
         }
     }
@@ -272,71 +304,93 @@ struct CardView: View {
 
     private func composer(_ item: InboxItem) -> some View {
         let name = title(item)
-        let short = name.count > 16 ? String(name.prefix(15)) + "…" : name
+        let short = name.count > 18 ? String(name.prefix(17)) + "…" : name
         let placeholder = item.isActionable ? "Type your answer…" : "Reply to \(short)"
         let empty = ui.replyText.trimmingCharacters(in: .whitespaces).isEmpty
-        return HStack(spacing: 7) {
+        let hints = ui.cardIsKey && !replyFocus
+        return HStack(spacing: 6) {
             Button { ui.attachShot.toggle() } label: {
-                Image(systemName: "camera")
-                    .font(look.font(11.5))
-                    .foregroundStyle(ui.attachShot ? Theme.blue : Color.white.opacity(0.75))
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(Color.white.opacity(ui.attachShot ? 0.14 : 0.07)))
+                HStack(spacing: 4) {
+                    Image(systemName: "camera")
+                        .font(look.font(11.5))
+                        .foregroundStyle(ui.attachShot ? Theme.blue : Color.white.opacity(0.8))
+                    if hints { KeyHint(key: "S") }
+                }
+                .padding(.horizontal, hints ? 6 : 0)
+                .frame(minWidth: 28, minHeight: 28)
+                .background(Capsule().fill(Color.white.opacity(ui.attachShot ? 0.14 : 0.07)))
             }
             .buttonStyle(.plain)
-                .focusable(false)
+            .focusable(false)
             .help(ui.attachShot ? "A screenshot will be attached" : "Attach a screenshot  (S)")
-            if ui.cardIsKey && !replyFocus { KeyHint(key: "S") }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 TextField(placeholder, text: $ui.replyText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(look.font(12))
                     .lineLimit(1...4)
                     .focused($replyFocus)
                     .onSubmit { send(item) }
-                if ui.cardIsKey && !replyFocus && empty { KeyHint(key: "space") }
+                if hints && empty { KeyHint(key: "space") }
                 IconButton(systemName: "mic", size: 11.5) { onVoiceReply(item) }
                     .help("Say it  (V)")
-                if ui.cardIsKey && !replyFocus { KeyHint(key: "V") }
-                Button { send(item) } label: {
-                    Image(systemName: "arrow.up")
-                        .font(look.font(10.5, .bold))
-                        .foregroundStyle(empty ? Theme.textFaint : .white)
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(empty ? Color.white.opacity(0.06) : Theme.blue))
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .disabled(empty)
+                if hints { KeyHint(key: "V") }
             }
-            .padding(.leading, 11).padding(.trailing, 4).padding(.vertical, 4)
+            .padding(.leading, 11).padding(.trailing, 5).padding(.vertical, 3)
+            .frame(minHeight: 28)
             .background(Capsule().fill(Color.white.opacity(0.07)))
-            .overlay(Capsule().stroke(replyFocus ? Color.white.opacity(0.22) : Color.clear, lineWidth: 1))
+            .overlay(Capsule().stroke(replyFocus ? Color.white.opacity(0.2) : Color.clear, lineWidth: 1))
+
+            Button { send(item) } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.up").font(look.font(10.5, .bold))
+                    Image(systemName: "return").font(look.font(9.5, .semibold)).opacity(empty ? 0.6 : 0.85)
+                }
+                .foregroundStyle(empty ? Theme.textFaint : .white)
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .background(Capsule().fill(empty ? Color.white.opacity(0.05) : Theme.blue))
+                .animation(.easeOut(duration: 0.15), value: empty)
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .disabled(empty)
         }
     }
 
-    private func actions(_ item: InboxItem) -> some View {
-        HStack(spacing: 6) {
-            Spacer()
-            if !item.isActionable && store.canKill(item.sessionId) {
-                Button { CardLogic.kill(item, store: store, ui: ui) } label: {
-                    HStack(spacing: 4) {
-                        Text("Kill agent")
-                        if ui.cardIsKey { KeyHint(key: "⇧X") }
+    private func discardButton(_ item: InboxItem, light: Bool) -> some View {
+        Button { CardLogic.discard(item, store: store, ui: ui) } label: {
+            HStack(spacing: 5) {
+                Text("Discard")
+                if ui.cardIsKey { KeyHint(key: "E", onLight: light) }
+            }
+        }
+        .buttonStyle(PillButtonStyle(light: light, hint: ui.cardIsKey))
+        .focusable(false)
+    }
+
+    /// Below a finished turn: "Next steps" with Kill agent and Discard on the same line, then the steps.
+    private func finishedActions(_ item: InboxItem) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.75).padding(.top, 2)
+            HStack(spacing: 6) {
+                if store.nextStepsEnabled || item.nextStepsState != .none {
+                    Text("Next steps").font(look.font(12, .semibold)).foregroundStyle(Color.white.opacity(0.5))
+                }
+                Spacer()
+                if store.canKill(item.sessionId) {
+                    Button { CardLogic.kill(item, store: store, ui: ui) } label: {
+                        HStack(spacing: 5) {
+                            Text("Kill agent")
+                            if ui.cardIsKey { KeyHint(key: "⇧X") }
+                        }
                     }
+                    .buttonStyle(PillButtonStyle(destructive: true, hint: ui.cardIsKey))
+                    .focusable(false)
                 }
-                .buttonStyle(PillButtonStyle(destructive: true))
-                .focusable(false)
+                discardButton(item, light: true)
             }
-            Button { CardLogic.discard(item, store: store, ui: ui) } label: {
-                HStack(spacing: 4) {
-                    Text("Discard")
-                    if ui.cardIsKey { KeyHint(key: "E", onLight: true) }
-                }
-            }
-            .buttonStyle(PillButtonStyle(light: true))
-                .focusable(false)
+            nextSteps(item)
         }
     }
 
@@ -344,13 +398,9 @@ struct CardView: View {
         Group {
             switch item.nextStepsState {
             case .loading:
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Next steps").font(look.font(11.5, .semibold)).foregroundStyle(Color.white.opacity(0.85))
-                    ShimmerText(text: "Thinking of next steps…")
-                }
+                ShimmerText(text: "Thinking of next steps…").padding(.leading, 2)
             case .ready where !item.nextSteps.isEmpty:
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Next steps").font(look.font(11.5, .semibold)).foregroundStyle(Color.white.opacity(0.85))
+                VStack(spacing: 5) {
                     ForEach(Array(item.nextSteps.enumerated()), id: \.offset) { i, step in
                         NextStepRow(number: i + 1, text: step,
                                     onEdit: { ui.replyText = step; NotificationCenter.default.post(name: .relayFocusReply, object: nil) },
@@ -361,7 +411,6 @@ struct CardView: View {
                 EmptyView()
             }
         }
-        .padding(.top, 2)
     }
 
     private func send(_ item: InboxItem) {
@@ -403,26 +452,121 @@ struct CardView: View {
     }
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Inbox").font(look.font(13.5, .semibold)).foregroundStyle(.white)
                 Spacer()
-                IconButton(systemName: "xmark", size: 10.5, action: onClose)
+                HeaderButton(systemName: "xmark", key: nil, filled: true, action: onClose)
             }
-            if store.visibleItems.isEmpty {
-                Text("Nothing is waiting on you.").font(look.font(12)).foregroundStyle(Theme.textDim)
-            } else {
-                InboxFilterBar(store: store)
-                Text(store.inboxFilter == .asking ? "No agent is asking you anything." : "No finished turns to show.")
-                    .font(look.font(12)).foregroundStyle(Theme.textDim)
+            if !store.visibleItems.isEmpty { InboxFilterBar(store: store) }
+            HStack(alignment: .top, spacing: 12) {
+                Mascot(style: .light, size: 30).padding(.top, 1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(emptyTitle).font(look.font(13, .semibold)).foregroundStyle(.white)
+                    Text(emptyDetail)
+                        .font(look.font(12)).foregroundStyle(Theme.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            if store.visibleSessions.isEmpty {
-                Text("Start Claude Code in any terminal or the Claude app. Agents show up here on their own.")
-                    .font(look.font(11)).foregroundStyle(Theme.textFaint)
-                    .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, 4)
+        }
+        .padding(.horizontal, 15).padding(.top, 13).padding(.bottom, 14)
+    }
+
+    private var emptyTitle: String {
+        if store.visibleItems.isEmpty { return "Nothing needs you." }
+        return store.inboxFilter == .asking ? "No agent is asking you anything." : "No finished turns to show."
+    }
+
+    private var emptyDetail: String {
+        if store.visibleSessions.isEmpty {
+            return "Start Claude Code in any terminal or the Claude app. Agents show up here on their own."
+        }
+        return store.visibleItems.isEmpty ? "Suspiciously quiet. Questions and finished work land here."
+                                          : "Pick another filter to see the rest."
+    }
+}
+
+/// A header control: a chevron, "?" or close, with its key beside it while the card has focus.
+private struct HeaderButton: View {
+    var systemName: String
+    var key: String?
+    var filled = false
+    var selected = false
+    var action: () -> Void
+    @ViewState private var hover = false
+    @ObservedObject private var look = Appearance.shared
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: systemName)
+                    .font(look.font(systemName == "questionmark" ? 10 : 10.5, .bold))
+                    .foregroundStyle(Color.white.opacity(hover || selected ? 1 : 0.75))
+                    .frame(width: 13)
+                if let key { KeyHint(key: key) }
+            }
+            .padding(.leading, key == nil ? 0 : 6).padding(.trailing, key == nil ? 0 : 3)
+            .frame(minWidth: 23, minHeight: 23)
+            .background(Capsule().fill(Color.white.opacity(selected ? 0.2 : (hover ? 0.13 : (filled || key != nil ? 0.08 : 0)))))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(PressScale())
+        .focusable(false)
+        .onHover { h in withAnimation(.easeOut(duration: 0.1)) { hover = h } }
+    }
+}
+
+/// The card's "?" panel: every key it understands.
+private struct KeyMap: View {
+    var finished: Bool
+    @ObservedObject private var look = Appearance.shared
+
+    private var rows: [(String, String)] {
+        var r: [(String, String)] = finished ? [] : [("1–9", "Pick an answer")]
+        r += [
+            ("J  K", "Previous · next"),
+            ("space", "Type a reply"),
+            ("V", "Say it"),
+            ("S", "Attach a screenshot"),
+            ("E", "Discard"),
+        ]
+        if finished { r.append(("⇧X", "Kill the agent")) }
+        r += [("O", "Open its session"), ("T", "Go to its terminal"), ("esc", "Undo · close")]
+        return r
+    }
+
+    var body: some View {
+        let half = (rows.count + 1) / 2
+        HStack(alignment: .top, spacing: 12) {
+            column(Array(rows.prefix(half)))
+            column(Array(rows.dropFirst(half)))
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.05)))
+    }
+
+    private func column(_ items: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 7) {
+                    KeyHint(key: row.0).frame(minWidth: 34, alignment: .leading)
+                    Text(row.1).font(look.font(10.5)).foregroundStyle(Theme.textDim).lineLimit(1)
+                }
             }
         }
-        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Markdown markers stripped for one-line previews.
+enum MarkdownInline {
+    static func plain(_ s: String) -> String {
+        var t = s
+        for m in ["**", "__", "`"] { t = t.replacingOccurrences(of: m, with: "") }
+        return t.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
 
@@ -477,8 +621,6 @@ enum CardLogic {
         s.replacingOccurrences(of: "(Recommended)", with: "").replacingOccurrences(of: "(recommended)", with: "")
             .trimmingCharacters(in: .whitespaces)
     }
-
-    static func isRecommended(_ s: String) -> Bool { s.lowercased().contains("(recommended)") }
 
     /// True while the card still shows this item.
     static func stillShowing(_ item: InboxItem, store: Store, ui: UIState) -> Bool {
@@ -569,7 +711,8 @@ enum CardLogic {
         // Take the screenshot now (what you're looking at), not when the countdown ends.
         let shot = ShotBox()
         if withShot { DispatchQueue.global(qos: .userInitiated).async { shot.path = Screenshot.capture() } }
-        ui.schedule(itemId: item.id, label: answering ? "Answer sent" : "Message sent") {
+        // A message shows its own words in the undo bar ("✓ push to prod"); an answer says "Answer sent".
+        ui.schedule(itemId: item.id, label: answering ? "Answer sent" : "Message sent", barText: answering ? nil : text) {
             if let path = shot.path { text += "\n\n(Screenshot of what I'm looking at: \(path))" }
             store.reply(to: item, text: text)
         }
@@ -640,7 +783,6 @@ struct ChoiceRow: View {
     var number: Int
     var label: String
     var detail: String?
-    var recommended: Bool
     var selected: Bool
     var dimmed: Bool
     var danger: Bool
@@ -652,9 +794,10 @@ struct ChoiceRow: View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 8) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 4.5).fill(selected ? Theme.green : Color.white.opacity(0.09))
+                    RoundedRectangle(cornerRadius: 5, style: .continuous).fill(selected ? Theme.green : Color.white.opacity(0.09))
                     if selected {
-                        Image(systemName: "checkmark").font(look.font(8.5, .heavy)).foregroundStyle(.black)
+                        Image(systemName: "checkmark").font(look.font(9, .heavy)).foregroundStyle(.black)
+                            .transition(.scale(scale: 0.3).combined(with: .opacity))
                     } else {
                         Text("\(number)").font(look.font(9.5, .semibold)).foregroundStyle(Theme.textDim)
                     }
@@ -662,8 +805,8 @@ struct ChoiceRow: View {
                 .frame(width: 17, height: 17)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(label)
-                        .font(look.font(12, .medium))
-                        .foregroundStyle(danger ? Color(hex: "#FF6B6B") : .white)
+                        .font(look.font(12.5))
+                        .foregroundStyle(danger ? Theme.red : .white)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                     if let detail, !detail.isEmpty {
@@ -672,26 +815,21 @@ struct ChoiceRow: View {
                     }
                 }
                 Spacer(minLength: 4)
-                if recommended {
-                    Text("Recommended")
-                        .font(look.font(9, .semibold)).foregroundStyle(Theme.amber)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Theme.amber.opacity(0.15)))
-                }
             }
-            .padding(.horizontal, 8).padding(.vertical, 6.5)
+            .padding(.horizontal, 8).padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(selected ? Color(hex: "#1E5B33").opacity(0.85) : Color.white.opacity(hover ? 0.1 : 0.055))
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(selected ? Theme.selectedFill : Color.white.opacity(hover ? 0.1 : 0.055))
             )
-            .opacity(dimmed ? 0.45 : 1)
+            .opacity(dimmed ? 0.4 : 1)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-                .focusable(false)
+        .focusable(false)
         .onHover { hover = $0 }
-        .animation(.easeOut(duration: 0.12), value: selected)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: selected)
+        .animation(.easeOut(duration: 0.18), value: dimmed)
     }
 }
 
@@ -726,39 +864,39 @@ struct CommitBar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                icon.font(look.font(13))
-                Text(commit.label).font(look.font(12, .semibold)).foregroundStyle(.white).lineLimit(1)
+                icon.font(look.font(14))
+                Text(commit.barText ?? commit.label).font(look.font(12.5, .medium)).foregroundStyle(.white).lineLimit(1)
                 Spacer()
                 Button(action: onUndo) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         KeyHint(key: "esc")
-                        Text("to undo").font(look.font(10.5, .medium)).foregroundStyle(Theme.textDim)
+                        Text("to undo").font(look.font(11, .medium)).foregroundStyle(Color.white.opacity(0.85))
                     }
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(Capsule().fill(Color.white.opacity(0.07)))
+                    .padding(.leading, 3).padding(.trailing, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
             }
-            .padding(.horizontal, 10).padding(.vertical, 8)
+            .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 7)
             TimelineView(.animation) { ctx in
                 let f = max(0, 1 - ctx.date.timeIntervalSince(commit.started) / commit.duration)
                 GeometryReader { geo in
-                    Capsule().fill(Theme.blue).frame(width: geo.size.width * f, height: 2)
+                    Capsule().fill(Theme.blue).frame(width: geo.size.width * f, height: 2.5)
                 }
-                .frame(height: 2)
+                .frame(height: 2.5)
             }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 2)
+            .padding(.horizontal, 9)
+            .padding(.bottom, 3)
         }
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.06)))
     }
 
     @ViewBuilder private var icon: some View {
         switch commit.kind {
         case .sent: Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
         case .discarded: Image(systemName: "circle.slash").foregroundStyle(Theme.blue)
-        case .killed: Image(systemName: "xmark.circle.fill").foregroundStyle(Color(hex: "#FF5F5F"))
+        case .killed: Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.red)
         }
     }
 }
@@ -775,17 +913,24 @@ struct NextStepRow: View {
         HStack(spacing: 8) {
             Text("\(number)").font(look.font(9.5, .semibold)).foregroundStyle(Theme.textDim)
                 .frame(width: 17, height: 17)
-                .background(RoundedRectangle(cornerRadius: 4.5).fill(Color.white.opacity(0.09)))
-            Text(text).font(look.font(12, .medium)).foregroundStyle(.white).lineLimit(2)
+                .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.white.opacity(0.09)))
+            Text(text).font(look.font(12.5)).foregroundStyle(.white).lineLimit(2)
             Spacer(minLength: 4)
-            IconButton(systemName: "arrow.up.left.and.arrow.down.right", size: 9.5, action: onEdit).help("Edit before sending")
-            IconButton(systemName: "arrow.right", size: 10.5, action: onSend).help("Send")
+            if hover {
+                IconButton(systemName: "arrow.up.left.and.arrow.down.right", size: 9.5, action: onEdit).help("Edit before sending")
+                    .transition(.opacity)
+            }
+            Image(systemName: "arrow.right").font(look.font(10.5, .semibold))
+                .foregroundStyle(Color.white.opacity(hover ? 0.9 : 0.45))
+                .offset(x: hover ? 2 : 0)
+                .padding(.trailing, 4)
         }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(hover ? 0.1 : 0.055)))
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(hover ? 0.1 : 0.055)))
         .contentShape(Rectangle())
         .onTapGesture(perform: onSend)
-        .onHover { hover = $0 }
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
+        .help("Send")
     }
 }
 
@@ -827,20 +972,25 @@ struct PillButtonStyle: ButtonStyle {
     var prominent = false
     var light = false
     var destructive = false
+    /// The label ends with a key hint, which sits closer to the edge.
+    var hint = false
 
     func makeBody(configuration: Configuration) -> some View {
         let look = Appearance.shared
         return configuration.label
-            .font(look.font(11, .semibold))
+            .font(look.font(11.5, .semibold))
             .lineLimit(1)
             .fixedSize()
-            .foregroundStyle(light ? Color.black.opacity(0.85) : (destructive ? Color(hex: "#FF6B6B") : .white))
-            .padding(.horizontal, 10).padding(.vertical, 4.5)
+            .foregroundStyle(light ? Color.black.opacity(0.88) : (destructive ? Theme.red : .white))
+            .padding(.leading, 10).padding(.trailing, hint ? 4 : 10).padding(.vertical, 3)
+            .frame(minHeight: 25)
             .background(
-                Capsule().fill(light ? Color.white.opacity(configuration.isPressed ? 0.7 : 0.92)
+                Capsule().fill(light ? Color.white.opacity(configuration.isPressed ? 0.7 : 0.94)
                                : prominent ? Theme.blue.opacity(configuration.isPressed ? 0.7 : 1)
-                               : Color.white.opacity(configuration.isPressed ? 0.16 : (destructive ? 0.06 : 0.09)))
+                               : destructive ? Theme.red.opacity(configuration.isPressed ? 0.22 : 0.12)
+                               : Color.white.opacity(configuration.isPressed ? 0.16 : 0.09))
             )
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
     }
 }
 

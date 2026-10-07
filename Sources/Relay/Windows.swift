@@ -39,6 +39,10 @@ final class OverlayController: NSObject {
     private var sideHost: SizeReportingHostingView<AnyView>!
     private let sub: FloatingPanel
     private var subHost: SizeReportingHostingView<AnyView>!
+    /// "Agent needs you" and the mascot, sliding out of the pill.
+    private let toast: FloatingPanel
+    private let announcement = AnnounceModel()
+    private var announceWork: DispatchWorkItem?
 
     var onVoice: ((Bool) -> Void)?          // Bool = with screenshot
     var onVoiceReply: ((InboxItem) -> Void)?
@@ -60,7 +64,11 @@ final class OverlayController: NSObject {
         card = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 348, height: 300))
         side = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300))
         sub = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300))
+        toast = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: Self.toastSize.width, height: Self.toastSize.height))
+        toast.allowsKey = false
+        toast.ignoresMouseEvents = true
         super.init()
+        toast.contentView = NSHostingView(rootView: NeedsYouToast(model: announcement))
 
         let pillView = PillView(
             store: store, ui: ui,
@@ -72,6 +80,9 @@ final class OverlayController: NSObject {
             onMore: { [weak self] in self?.toggleSide(.settings) })
         let pillHost = HoverHostingView(rootView: pillView)
         pillHost.onHover = { [weak self] inside in self?.setHover(inside) }
+        // These windows grow leftward from the screen edge; until SwiftUI redraws after a resize,
+        // keep the old frame's pixels pinned right rather than flashing them at the left.
+        pillHost.layerContentsPlacement = .right
         pill.contentView = pillHost
 
         cardHost = SizeReportingHostingView(rootView: AnyView(
@@ -80,6 +91,7 @@ final class OverlayController: NSObject {
                      onVoiceReply: { [weak self] item in self?.onVoiceReply?(item) })
         ))
         card.contentView = cardHost
+        cardHost.layerContentsPlacement = .right
         cardHost.onFittingSizeChange = { [weak self] in self?.layoutCard() }
 
         sideHost = SizeReportingHostingView(rootView: AnyView(SidePanelRoot(
@@ -92,6 +104,7 @@ final class OverlayController: NSObject {
             onTalk: { [weak self] id in self?.closeSide(); self?.onTalkTo?(id) },
             onAction: { [weak self] a in self?.settingsAction(a) })))
         side.contentView = sideHost
+        sideHost.layerContentsPlacement = .right
         sideHost.onFittingSizeChange = { [weak self] in self?.layoutSide() }
         subHost = SizeReportingHostingView(rootView: AnyView(SubPanelRoot(
             store: store, ui: ui,
@@ -130,6 +143,12 @@ final class OverlayController: NSObject {
             DispatchQueue.main.async { self.layoutCard() }
         }.store(in: &bag)
         store.itemArrived.receive(on: RunLoop.main).sink { [weak self] item in self?.itemArrived(item) }.store(in: &bag)
+        // The pill stays open while you talk; it needs its wide frame for that.
+        ui.$talking.removeDuplicates().dropFirst().receive(on: RunLoop.main).sink { [weak self] talking in
+            guard let self else { return }
+            self.positionPill()
+            if !talking && !NSMouseInRect(NSEvent.mouseLocation, self.pill.frame, false) { self.setHover(false) }
+        }.store(in: &bag)
 
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -168,17 +187,76 @@ final class OverlayController: NSObject {
     var pillFrame: NSRect { pill.frame }
 
     func positionPill() {
-        guard let screen else { return }
+        guard let rect = pillRect(expanded: ui.pillExpanded || ui.cardOpen || ui.talking) else { return }
+        pill.setFrame(rect, display: true)
+    }
+
+    private func pillRect(expanded: Bool) -> NSRect? {
+        guard let screen else { return nil }
         let vf = screen.visibleFrame
         let full = screen.frame
-        let expanded = ui.pillExpanded || ui.cardOpen
         let width = expanded ? Self.expandedWidth : Self.collapsedWidth
         // Collapsed, the window is only as tall as its dots so it never blocks clicks it doesn't need.
         let dots = max(1, min(store.visibleSessions.count, 8))
-        let height = expanded ? Self.pillHeight : CGFloat(20 + dots * 14)
+        let height = expanded ? Self.pillHeight : CGFloat(24 + dots * 14)
         let centerY = vf.minY + vf.height * verticalFraction
         let y = min(max(centerY - height / 2, vf.minY), vf.maxY - height)
-        pill.setFrame(NSRect(x: full.maxX - width, y: y, width: width, height: height), display: true)
+        return NSRect(x: full.maxX - width, y: y, width: width, height: height)
+    }
+
+    /// Where the talk bar sits: level with the pill's mic (or beside the card or list when one is open).
+    var talkAnchor: NSRect {
+        if (ui.panelOpen && side.isVisible) || (ui.cardOpen && card.isVisible) { return anchorFrame }
+        guard let pf = pillRect(expanded: true) else { return anchorFrame }
+        // Mirrors PillView's expanded column: inbox, agents, then the talk group (workspaces, mic, camera), "…".
+        let n = CGFloat(min(store.visibleSessions.count, 10))
+        let agents: CGFloat = n > 0 ? n * 9 + (n - 1) * 7 + 20 + 7 : 0
+        let column: CGFloat = 32 + 7 + agents + 91 + 7 + 32
+        let micFromTop: CGFloat = 32 + 7 + agents + 5 + 27 + 13.5
+        let scale = Appearance.shared.pillScale
+        let micY = pf.midY + (column / 2 - micFromTop) * scale
+        return NSRect(x: pf.maxX - 44 * scale, y: micY - 1, width: 44 * scale, height: 2)
+    }
+
+    // MARK: Announcement
+
+    static let toastSize = NSSize(width: 300, height: 110)
+
+    /// Slides "Agent needs you" out of the pill with the mascot, then runs `then` as it leaves.
+    private func announce(_ text: String, then: (() -> Void)?) {
+        guard isPillVisible, let screen else { then?(); return }
+        announceWork?.cancel()
+        let pf = pill.frame
+        let size = Self.toastSize
+        // Level with the pill: the capsule just above its middle, the mascot below.
+        toast.setFrame(NSRect(x: screen.frame.maxX - size.width, y: pf.midY + 33 - size.height,
+                              width: size.width, height: size.height), display: false)
+        announcement.pillWidth = ui.pillExpanded ? 46 * Appearance.shared.pillScale : 10
+        announcement.text = text
+        announcement.phase = .hidden
+        toast.order(.below, relativeTo: pill.windowNumber)   // the mascot comes out from behind the pill
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+            guard self?.announcement.phase == .hidden else { return }
+            self?.announcement.phase = .shown
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.announcement.phase = .leaving
+            then?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, self.announcement.phase == .leaving else { return }
+                self.hideToast()
+            }
+        }
+        announceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (then == nil ? 2.4 : 1.3), execute: work)
+    }
+
+    private func hideToast() {
+        announceWork?.cancel()
+        announceWork = nil
+        announcement.phase = .hidden
+        toast.orderOut(nil)
     }
 
     private func layoutCard() {
@@ -258,6 +336,7 @@ final class OverlayController: NSObject {
 
     func openCard(focus: Bool, itemId: String? = nil) {
         guard isPillVisible else { return }
+        if announcement.phase == .shown { hideToast() }
         closeSide()
         ui.autoOpened = false
         // An item the filter hides (a question while showing Done): show everything so it can appear.
@@ -275,7 +354,8 @@ final class OverlayController: NSObject {
         if focus {
             if !NSApp.isActive { previousApp = NSWorkspace.shared.frontmostApplication }
             NSApp.activate(ignoringOtherApps: true)
-            card.makeKeyAndOrderFront(nil)
+            card.orderFrontRegardless()     // even if macOS declines to activate Relay
+            card.makeKey()
             card.makeFirstResponder(nil)   // no focus ring on the first button
         } else if !wasOpen {
             card.orderFrontRegardless()
@@ -299,12 +379,17 @@ final class OverlayController: NSObject {
         previousApp = nil
     }
 
+    /// A new question: "Agent needs you" slides out of the pill, then the card opens on it
+    /// (unless you turned that off, or the question was answered meanwhile).
     private func itemArrived(_ item: InboxItem) {
-        guard ui.openCardWhenAsked, item.isActionable,
+        guard item.isActionable, !ui.cardOpen,
               store.workspaceFilter == nil || store.workspaceFilter == item.workspaceId else { return }
-        if !ui.cardOpen {
-            openCard(focus: false, itemId: item.id)
-            ui.autoOpened = true
+        let openAfter = ui.openCardWhenAsked
+        announce("Agent needs you") { [weak self] in
+            guard let self, openAfter, !self.ui.cardOpen,
+                  self.store.items.contains(where: { $0.id == item.id }) else { return }
+            self.openCard(focus: false, itemId: item.id)
+            self.ui.autoOpened = true
         }
     }
 
@@ -329,10 +414,14 @@ final class OverlayController: NSObject {
         ui.sidePanel = panel
         if panel == .agents { store.refreshTitles() }
         positionPill()
-        layoutSide()
-        side.orderFrontRegardless()
         sub.orderOut(nil)
-        DispatchQueue.main.async { self.layoutSide() }
+        // Measure once SwiftUI has built the new panel, so it never shows at a stale size first.
+        DispatchQueue.main.async {
+            guard self.ui.sidePanel == panel else { return }
+            self.layoutSide()
+            self.side.orderFrontRegardless()
+            DispatchQueue.main.async { self.layoutSide() }
+        }
     }
 
     func closeSide() {
@@ -462,6 +551,7 @@ final class OverlayController: NSObject {
                 NotificationCenter.default.post(name: .relayFocusReply, object: nil)
             }
             return true
+        case 44 where shift: ui.showKeys.toggle(); return true                           // ?
         case 1 where !shift: ui.attachShot.toggle(); return true                         // S
         case 9 where !shift: onVoiceReply?(item); return true                            // V
         case 14 where !shift: CardLogic.discard(item, store: store, ui: ui); return true  // E (undoable)

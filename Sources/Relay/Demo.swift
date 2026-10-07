@@ -31,7 +31,7 @@ enum Demo {
     private static var recorder: AnyObject?
     private static let state = DemoState()
 
-    static func run(store: Store, ui: UIState, overlay: OverlayController) {
+    static func run(store: Store, ui: UIState, overlay: OverlayController, voice: VoiceController) {
         seed(store)
         overlay.positionPill()
         guard let screen = NSScreen.screens.first else { NSApp.terminate(nil); return }
@@ -64,7 +64,7 @@ enum Demo {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             rec.start(stage: stage, screen: screen, url: outputURL) { ok in
                 guard ok else { NSApp.terminate(nil); return }
-                script(store: store, ui: ui, overlay: overlay) {
+                script(store: store, ui: ui, overlay: overlay, voice: voice) {
                     rec.stop { NSApp.terminate(nil) }
                 }
             }
@@ -117,7 +117,9 @@ enum Demo {
             session("s5", ws: "acme", folder: "ledger-db", title: "Migrate users to Postgres 17", status: .working,
                     prompt: "write the migration for the users table and dry-run it on the staging dump", term: iterm, minutesAgo: 7),
         ]
-        store.sessions = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+        var sessions = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+        sessions["s2"]?.backgroundTasks = 2
+        store.sessions = sessions
         HeatMonitor.shared.injectDemo([
             "s2": SessionHeat(cpu: 312, level: .hot),
             "s5": SessionHeat(cpu: 118, level: .warm),
@@ -139,6 +141,7 @@ enum Demo {
             multiSelect: false)]
         item.prompt = "add a rate limiter to /v1/launch, keep p99 under 5 ms"
         item.activity = "Explored · Read launch.rs · Ran · cargo bench"
+        item.said = "Two designs fit the 5 ms budget. One question before I wire it in."
         return item
     }
 
@@ -158,31 +161,25 @@ enum Demo {
         ]])
         item.prompt = "shaders stop reloading after the first edit, find out why"
         item.activity = "Explored · Read watcher.rs · Edited · watcher.rs"
+        item.said = "The watcher dies after the first rebuild. Restarting it on a fresh build."
         return item
     }
 
     private static func finishedItem() -> InboxItem {
-        let reply = """
-        Shell startup went from **412 ms** to **38 ms**.
-
-        - Lazy-loaded `nvm` and `pyenv` behind shims
-        - Dropped oh-my-zsh for 3 plugins sourced directly
-        - Compiled `.zshrc` with `zcompile`
-
-        `hyperfine 'zsh -i -c exit'` → 38.2 ms ± 1.1 ms
-        """
+        let reply = "Shell startup is down from 412 ms to 38 ms. Tests green."
         var item = InboxItem(sessionId: "s4", workspaceId: "lab", kind: .finished,
                              title: "Make zsh start faster", body: reply)
         item.prompt = "my shell takes forever to open, profile it and fix it"
         item.activity = "Explored · Read .zshrc · Ran · hyperfine"
-        item.nextSteps = ["Commit this with a short message", "Do the same for my bash config"]
+        item.nextSteps = ["Looks good, commit it", "Do the same for my bash config"]
         item.nextStepsState = .ready
         return item
     }
 
     // MARK: Script
 
-    private static func script(store: Store, ui: UIState, overlay: OverlayController, done: @escaping () -> Void) {
+    private static func script(store: Store, ui: UIState, overlay: OverlayController, voice: VoiceController,
+                               done: @escaping () -> Void) {
         func at(_ t: Double, _ f: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: f) }
         func press(_ key: String, _ label: String) {
             state.keycap = (key, label)
@@ -195,39 +192,62 @@ enum Demo {
             s.updatedAt = Date()
             store.sessions[id] = s
         }
+        func type(_ text: String, from t: Double) {
+            for i in 1...text.count { at(t + Double(i) * 0.06) { ui.replyText = String(text.prefix(i)) } }
+        }
 
         let q = questionItem(), f = finishedItem()
         var p = permissionItem()
         p.createdAt = q.createdAt.addingTimeInterval(-1)   // the question stays "1 of 2"
         at(0.8) { overlay.setHover(true) }
-        at(2.6) { overlay.setHover(false) }
-        at(3.8) {
+        at(2.4) { overlay.setHover(false) }
+        // A question: "Agent needs you" slides out of the pill, then the card opens on it.
+        at(3.4) {
             setStatus("s1", .waiting)
             state.append(.tool, "⏺ AskUserQuestion")
             state.append(.dim, "  ⎿  Waiting for your answer…")
             store.demoInsert(q)
         }
-        at(4.1) { overlay.openCard(focus: true) }
-        at(5.0) {
+        at(5.6) {
             setStatus("s3", .waiting)
             store.demoInsert(p)
         }
-        at(6.8) { press("1", "pick option"); CardLogic.choose(0, item: q, store: store, ui: ui) }
-        at(8.95) {
+        at(5.9) { overlay.openCard(focus: true) }
+        at(7.4) { press("1", "pick option"); CardLogic.choose(0, item: q, store: store, ui: ui) }
+        at(9.55) {
             state.lines.removeLast()
             state.append(.dim, "  ⎿  Token bucket")
             state.append(.tool, "⏺ Write(src/middleware/token_bucket.rs)")
             state.append(.dim, "  ⎿  Wrote 96 lines")
             state.append(.think, "✻ Wiring it into the router…")
         }
-        at(10.2) { press("2", "allow + remember"); CardLogic.choose(1, item: p, store: store, ui: ui) }
-        at(11.0) {
+        at(10.6) { press("2", "allow + remember"); CardLogic.choose(1, item: p, store: store, ui: ui) }
+        at(11.4) {
             setStatus("s4", .done, message: f.body)
             store.demoInsert(f)
         }
-        at(16.0) { overlay.toggleSide(.agents) }
-        at(20.5) { overlay.closeSide() }
-        at(21.3, done)
+        // A reply to the finished turn: the undo bar shows your words.
+        at(13.4) { press("space", "reply") }
+        type("commit it", from: 13.6)
+        at(14.6) {
+            press("⏎", "send")
+            ui.replyText = ""
+            ui.schedule(itemId: f.id, label: "Message sent", barText: "commit it") { store.dismiss(f) }
+        }
+        at(17.2) { overlay.closeCard() }
+        // Talk: the bar fills as you speak, then says who got it.
+        at(17.8) { press("⌥⌥", "talk") }
+        at(18.0) { voice.demoTalk("Make the orders page faster", to: "s5") }
+        // Every agent: the list opens, and agents finish one by one.
+        at(22.2) { overlay.toggleSide(.agents) }
+        at(23.4) { setStatus("s3", .done) }
+        at(24.0) { setStatus("s1", .done) }
+        at(24.6) { HeatMonitor.shared.injectDemo(["s5": SessionHeat(cpu: 118, level: .warm)]); setStatus("s2", .done) }
+        at(26.4) { overlay.closeSide() }
+        // Nothing left: the empty inbox.
+        at(27.0) { overlay.openCard(focus: false) }
+        at(29.4) { overlay.closeCard() }
+        at(30.0, done)
     }
 }
 
@@ -261,10 +281,10 @@ private struct DemoBackdrop: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            LinearGradient(colors: [Color(hex: "#0E1424"), Color(hex: "#05060A")],
+            LinearGradient(colors: [Color(hex: "#F4F5F3"), Color(hex: "#E4E6E2")],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
-            RadialGradient(colors: [Color(hex: "#4C8DFF").opacity(0.16), .clear],
-                           center: UnitPoint(x: 0.25, y: 0.2), startRadius: 10, endRadius: 520)
+            RadialGradient(colors: [Color.white.opacity(0.8), .clear],
+                           center: UnitPoint(x: 0.3, y: 0.25), startRadius: 10, endRadius: 560)
             Canvas { ctx, size in
                 // A faint dot grid, like graph paper.
                 let step: CGFloat = 24
@@ -273,7 +293,7 @@ private struct DemoBackdrop: View {
                     var x: CGFloat = step / 2
                     while x < size.width {
                         ctx.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.4, height: 1.4)),
-                                 with: .color(.white.opacity(0.07)))
+                                 with: .color(.black.opacity(0.07)))
                         x += step
                     }
                     y += step
@@ -286,9 +306,11 @@ private struct DemoBackdrop: View {
                 let key = cap.0, label = cap.1
                 HStack(spacing: 10) {
                     Text(key)
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .font(.system(size: key.count > 1 ? 17 : 22, weight: .semibold, design: .rounded))
                         .foregroundColor(.white)
-                        .frame(width: 44, height: 44)
+                        .fixedSize()
+                        .padding(.horizontal, key.count > 1 ? 10 : 0)
+                        .frame(minWidth: 44, minHeight: 44)
                         .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.12)))
                         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.3), lineWidth: 1))
                         .shadow(color: .black.opacity(0.4), radius: 4, y: 3)

@@ -14,40 +14,51 @@ struct PillView: View {
     var onHome: () -> Void
     var onMore: () -> Void
 
+    private var isExpanded: Bool { ui.pillExpanded || ui.cardOpen || ui.panelOpen || ui.talking }
+
     var body: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            if ui.pillExpanded || ui.cardOpen || ui.panelOpen {
+            if isExpanded {
                 expanded
                     .scaleEffect(look.pillScale, anchor: .trailing)
                     .padding(.trailing, 7)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(.asymmetric(
+                        insertion: .scale(scale: 0.55, anchor: .trailing).combined(with: .opacity),
+                        removal: .scale(scale: 0.8, anchor: .trailing).combined(with: .opacity)))
             } else {
                 collapsed.transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.spring(response: 0.22, dampingFraction: 0.9), value: ui.pillExpanded || ui.cardOpen || ui.panelOpen)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
     }
 
     private var sessions: [AgentSession] { Array(store.visibleSessions.prefix(10)) }
 
+    /// Amber while the agent has a question waiting in the inbox, whatever its hook status says.
+    private func shown(_ s: AgentSession) -> AgentStatus {
+        store.items.contains { $0.sessionId == s.id && $0.isActionable } ? .waiting : s.shownStatus
+    }
+
     // MARK: Collapsed
 
     private var collapsed: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 5) {
             if sessions.isEmpty {
                 Circle().fill(Color.white.opacity(0.35)).frame(width: 4, height: 4)
             }
             ForEach(sessions) { s in
-                StatusGlyph(status: s.shownStatus, size: 5, heat: heat.heat[s.id]?.level ?? .none)
+                StatusGlyph(status: shown(s), size: 5.5, heat: heat.heat[s.id]?.level ?? .none, pop: 1.9)
             }
         }
-        .padding(.vertical, 7)
-        .frame(width: 9)
-        .background(LeftRoundedRect(radius: 5).fill(Color.black.opacity(0.82)))
-        .overlay(LeftRoundedRect(radius: 5).stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+        .padding(.vertical, 7 + Self.flare)
+        .frame(width: 10)
+        .background(EdgeTab(radius: 5, flare: Self.flare).fill(Color(hex: "#080808")))
+        .overlay(EdgeTab(radius: 5, flare: Self.flare).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
     }
+
+    static let flare: CGFloat = 6
 
     // MARK: Expanded
 
@@ -56,68 +67,74 @@ struct PillView: View {
             // Inbox
             Button(action: onInbox) {
                 Image(systemName: "tray")
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(Circle().fill(ui.cardOpen ? Color.white.opacity(0.2) : Color.black.opacity(0.78)))
-                    .overlay(Circle().stroke(Color.white.opacity(0.14), lineWidth: 0.75))
+                    .frame(width: 32, height: 32)
+                    .pillChrome(Circle(), active: ui.cardOpen)
                     .overlay(alignment: .topTrailing) { inboxBadge }
             }
-            .buttonStyle(.plain)
-                .focusable(false)
+            .buttonStyle(PressScale())
+            .focusable(false)
             .hoverTip(store.waitingCount > 0 ? "\(store.waitingCount) waiting · ⌃⌥Space" : "Inbox · ⌃⌥Space")
 
             // Agents
             if !sessions.isEmpty {
                 Button(action: onAgents) {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 7) {
                         ForEach(sessions) { s in
-                            StatusGlyph(status: s.shownStatus, size: 8.5, heat: heat.heat[s.id]?.level ?? .none)
+                            StatusGlyph(status: shown(s), size: 9, heat: heat.heat[s.id]?.level ?? .none, pop: 1.8)
                         }
                     }
-                    .padding(.vertical, 8)
-                    .frame(width: 22)
-                    .background(Capsule().fill(Color.black.opacity(0.78)))
-                    .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.75))
+                    .padding(.vertical, 10)
+                    .frame(width: 32)
+                    .pillChrome(Capsule(), active: ui.sidePanel == .agents)
                     .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressScale())
                 .focusable(false)
                 .hoverTip(agentsSummary)
             }
 
             // Talk group
-            VStack(spacing: 2) {
-                GroupButton(systemName: "face.smiling", help: "Workspaces", action: onHome)
-                GroupButton(systemName: "mic", help: "Talk · ⌥⌥", action: onVoice)
-                GroupButton(systemName: "camera", help: "Talk with a screenshot", action: onScreenshotVoice)
+            VStack(spacing: 1) {
+                GroupButton(help: "Workspaces", action: onHome) {
+                    Mascot(style: .outline, size: 15, blinks: false)
+                }
+                GroupButton(help: ui.listening ? "Listening · ⌥⌥ sends" : "Talk · ⌥⌥", action: onVoice) {
+                    if ui.listening {
+                        ListeningBars(height: 13)
+                    } else {
+                        Image(systemName: "mic").font(.system(size: 13, weight: .medium))
+                    }
+                }
+                GroupButton(help: "Talk with a screenshot", action: onScreenshotVoice) {
+                    Image(systemName: "camera").font(.system(size: 12.5, weight: .medium))
+                }
             }
-            .padding(.vertical, 4)
-            .background(Capsule().fill(Color.black.opacity(0.78)))
-            .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.75))
+            .padding(.vertical, 5)
+            .frame(width: 32)
+            .pillChrome(Capsule(), active: ui.talking)
 
             // More
             Button(action: onMore) {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 26, height: 26)
-                    .background(Circle().fill(ui.panelOpen ? Color.white.opacity(0.2) : Color.black.opacity(0.78)))
-                    .overlay(Circle().stroke(Color.white.opacity(0.14), lineWidth: 0.75))
+                    .frame(width: 32, height: 32)
+                    .pillChrome(Circle(), active: ui.panelOpen && ui.sidePanel == .settings)
             }
-            .buttonStyle(.plain)
-                .focusable(false)
+            .buttonStyle(PressScale())
+            .focusable(false)
             .hoverTip("Settings")
         }
-        .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
     }
 
     @ViewBuilder private var inboxBadge: some View {
         let items = store.visibleItems
         if items.contains(where: { $0.isActionable }) {
-            Circle().fill(Theme.amber).frame(width: 7, height: 7).offset(x: 1, y: -1)
+            Badge(color: Color(hex: "#FFD426"))
         } else if !items.isEmpty {
-            Circle().fill(Theme.green).frame(width: 7, height: 7).offset(x: 1, y: -1)
+            Badge(color: Theme.green)
         }
     }
 
@@ -132,43 +149,47 @@ struct PillView: View {
     }
 }
 
-private struct GroupButton: View {
-    var systemName: String
+/// The inbox's dot: it pops in when something lands.
+private struct Badge: View {
+    var color: Color
+    @ViewState private var shown = false
+
+    var body: some View {
+        Circle().fill(color)
+            .frame(width: 8, height: 8)
+            .overlay(Circle().stroke(Color.black.opacity(0.7), lineWidth: 1.2))
+            .scaleEffect(shown ? 1 : 0.2)
+            .offset(x: 2, y: -2)
+            .onAppear { withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { shown = true } }
+    }
+}
+
+/// Buttons in the pill sink a little while pressed.
+struct PressScale: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+private struct GroupButton<Icon: View>: View {
     var help: String
     var action: () -> Void
+    @ViewBuilder var icon: () -> Icon
     @ViewState private var hover = false
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.white.opacity(hover ? 1 : 0.85))
-                .frame(width: 26, height: 24)
+            icon()
+                .foregroundStyle(Color.white.opacity(hover ? 1 : 0.9))
+                .frame(width: 30, height: 27)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-                .focusable(false)
+        .buttonStyle(PressScale())
+        .focusable(false)
         .onHover { hover = $0 }
         .hoverTip(help)
-    }
-}
-
-/// Rectangle rounded only on its left side (it hugs the screen's right edge).
-struct LeftRoundedRect: Shape {
-    var radius: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        let r = min(radius, rect.height / 2, rect.width)
-        p.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY))
-        p.addArc(center: CGPoint(x: rect.minX + r, y: rect.minY + r), radius: r,
-                 startAngle: .degrees(-90), endAngle: .degrees(180), clockwise: true)
-        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
-        p.addArc(center: CGPoint(x: rect.minX + r, y: rect.maxY - r), radius: r,
-                 startAngle: .degrees(180), endAngle: .degrees(90), clockwise: true)
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        return p
     }
 }
 

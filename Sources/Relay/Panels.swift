@@ -3,13 +3,16 @@ import AppKit
 
 // MARK: - Agents list
 
-/// Every running agent, grouped by account (or by project with a single account), like One's list.
+/// Every running agent, grouped by account (or by project with a single account), like One's list:
+/// one compact line per agent with talk and hide always at hand.
 struct AgentsListView: View {
     @ObservedObject var store: Store
     @ObservedObject private var look = Appearance.shared
     @ObservedObject private var heat = HeatMonitor.shared
     var onOpen: (String) -> Void
     var onTalk: (String) -> Void
+    /// Rows fade in one after another when the list opens.
+    @ViewState private var revealed = false
 
     private struct AgentGroup {
         var title: String
@@ -44,17 +47,18 @@ struct AgentsListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Rectangle().fill(Color.white.opacity(0.07)).frame(height: 0.5)
             if store.visibleSessions.isEmpty {
                 emptyState
             } else {
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
-                            VStack(alignment: .leading, spacing: 4) {
-                                groupHeader(g)
-                                ForEach(g.sessions) { s in
+                    VStack(alignment: .leading, spacing: 12) {
+                        let gs = groups
+                        ForEach(Array(gs.enumerated()), id: \.offset) { gi, g in
+                            let before = gs.prefix(gi).reduce(0) { $0 + $1.sessions.count + 1 }
+                            VStack(alignment: .leading, spacing: 1) {
+                                groupHeader(g, first: gi == 0)
+                                    .modifier(Reveal(on: revealed, index: before))
+                                ForEach(Array(g.sessions.enumerated()), id: \.element.id) { i, s in
                                     AgentRow(session: s,
                                              waiting: waiting(s),
                                              heat: heat.heat[s.id],
@@ -62,77 +66,67 @@ struct AgentsListView: View {
                                              onOpen: { onOpen(s.id) },
                                              onTalk: { onTalk(s.id) },
                                              onHide: { store.forgetSession(s.id) })
+                                        .modifier(Reveal(on: revealed, index: before + 1 + i))
                                 }
                             }
                         }
                     }
-                    .padding(.horizontal, 8).padding(.top, 10).padding(.bottom, 8)
+                    .padding(.horizontal, 7).padding(.top, 11).padding(.bottom, 8)
                 }
                 .frame(maxHeight: 520)
             }
         }
-        .frame(width: 330 * look.textScale)
+        .frame(width: 318 * look.textScale)
         .fixedSize(horizontal: false, vertical: true)
-        .background(Glass())
-        .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
-        .padding(16)
+        .background(Glass(cornerRadius: 18))
+        .floatingPanelShadow()
+        .scaleEffect(revealed ? 1 : 0.94, anchor: .trailing)
+        .opacity(revealed ? 1 : 0)
         .preferredColorScheme(.dark)
+        .onAppear { withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { revealed = true } }
     }
 
-    private var header: some View {
-        let sessions = store.visibleSessions
-        let working = sessions.filter { $0.shownStatus == .working }.count
-        let needsYou = sessions.filter { $0.shownStatus == .waiting || $0.shownStatus == .idle || waiting($0) > 0 }.count
-        let hot = sessions.filter { heat.heat[$0.id]?.level == .hot }.count
-        let clearable = sessions.filter(store.isClearable).count
-        return HStack(spacing: 8) {
-            Text("Agents").font(look.font(14, .semibold)).foregroundStyle(.white)
-            if !sessions.isEmpty {
-                Text("\(sessions.count)")
-                    .font(look.font(11, .semibold).monospacedDigit())
-                    .foregroundStyle(Theme.textDim)
-            }
-            Spacer(minLength: 8)
-            if heat.macIsHot { ThermalTally(thermal: heat.thermal) }
-            if hot > 0 { Tally(count: hot, label: "hot", color: Fire.orange) }
-            if needsYou > 0 { Tally(count: needsYou, label: "need you", color: Theme.amber) }
-            if working > 0 { Tally(count: working, label: "working", color: Theme.blue) }
-            if clearable > 0 { ClearButton(count: clearable) { store.forgetClearableSessions(sessions) } }
-        }
-        .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 11)
-    }
-
-    private func groupHeader(_ g: AgentGroup) -> some View {
-        HStack(spacing: 6) {
-            if let color = g.color {
-                Circle().fill(color).frame(width: 6, height: 6)
-            } else {
-                Image(systemName: "folder.fill").font(look.font(8.5)).foregroundStyle(Theme.textFaint)
-            }
-            Text(g.title.uppercased())
-                .font(look.font(10, .semibold)).tracking(0.7)
-                .foregroundStyle(Theme.textDim).lineLimit(1)
+    private func groupHeader(_ g: AgentGroup, first: Bool) -> some View {
+        let clearable = first ? store.visibleSessions.filter(store.isClearable).count : 0
+        return HStack(spacing: 5) {
+            if let color = g.color { Circle().fill(color).frame(width: 6, height: 6) }
+            Text(g.title).font(look.font(12, .semibold)).foregroundStyle(Color.white.opacity(0.45)).lineLimit(1)
             if let sub = g.subtitle {
-                Text(sub).font(look.font(10)).foregroundStyle(Theme.textFaint).lineLimit(1).truncationMode(.middle)
+                Text("· \(sub)").font(look.font(12, .medium)).foregroundStyle(Color.white.opacity(0.32))
+                    .lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 4)
-            Text("\(g.sessions.count)").font(look.font(10, .medium).monospacedDigit()).foregroundStyle(Theme.textFaint)
+            if heat.macIsHot && first { ThermalTally(thermal: heat.thermal) }
+            if clearable > 0 { ClearButton(count: clearable) { store.forgetClearableSessions(store.visibleSessions) } }
         }
-        .padding(.horizontal, 8).padding(.bottom, 2)
+        .padding(.horizontal, 9).padding(.bottom, 3)
+        .frame(minHeight: 20)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle().fill(Theme.claude.opacity(0.12)).frame(width: 40, height: 40)
-                Image(systemName: "staroflife.fill").font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.claude)
+        HStack(alignment: .top, spacing: 12) {
+            Mascot(style: .light, size: 30).padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("No agents running").font(look.font(13, .semibold)).foregroundStyle(.white)
+                Text("Start Claude Code in any terminal or the Claude app.")
+                    .font(look.font(12)).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
             }
-            Text("No agents running").font(look.font(12.5, .semibold)).foregroundStyle(.white)
-            Text("Start Claude Code in any terminal or the Claude app.")
-                .font(look.font(11)).foregroundStyle(Theme.textDim).multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 20).padding(.vertical, 26)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 15).padding(.vertical, 15)
+    }
+}
+
+/// Staggered fade-and-slide for list rows as the panel opens.
+private struct Reveal: ViewModifier {
+    var on: Bool
+    var index: Int
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(on ? 1 : 0)
+            .offset(y: on ? 0 : 6)
+            .animation(.spring(response: 0.36, dampingFraction: 0.84).delay(Double(min(index, 14)) * 0.028), value: on)
     }
 }
 
@@ -155,6 +149,7 @@ private struct ClearButton: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .focusable(false)
         .onHover { hover = $0 }
         .help("Remove done and ready agents from the list; each returns when it does something again")
     }
@@ -188,87 +183,97 @@ private struct AgentRow: View {
     var onTalk: () -> Void
     var onHide: () -> Void
     @ViewState private var hover = false
+    /// Green wash that fades out after the agent finishes.
+    @ViewState private var flash: Double = 0
     @ObservedObject private var look = Appearance.shared
 
-    private var hasTitle: Bool { session.title?.isEmpty == false }
     private var needsYou: Bool { session.needsYou(waiting: waiting) }
-    private var statusText: String { session.statusText(waiting: waiting) }
-    private var statusColor: Color { waiting > 0 ? Theme.amber : session.shownStatus.color }
-
-    /// Folder (when it isn't the name already) and where the agent runs.
-    private var meta: String {
-        var parts: [String] = []
-        if hasTitle && showFolder { parts.append(session.folderName) }
-        if !hasTitle { parts.append(session.shortPath) }
-        parts.append(session.terminal.kindLabel)
-        return parts.joined(separator: " · ")
-    }
-
-    private var prompt: String? { session.promptPreview }
+    private var status: AgentStatus { waiting > 0 ? .waiting : session.shownStatus }
     private var heatLevel: HeatLevel { heat?.level ?? .none }
+    private var tasks: Int { session.backgroundTasks ?? 0 }
+
+    /// Everything the compact row leaves out, on hover.
+    private var details: String {
+        var parts = [session.statusText(waiting: waiting)]
+        if showFolder || session.title?.isEmpty == false { parts.append(session.folderName) }
+        parts.append(session.terminal.kindLabel)
+        if let h = heat, h.level > .none { parts.append(h.cpuLabel) }
+        var text = parts.joined(separator: " · ")
+        if let p = session.promptPreview { text += "\n" + p }
+        return text
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            AgentOrb(status: session.shownStatus, attention: needsYou, heat: heatLevel)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(session.displayName)
-                        .font(look.font(12.5, .semibold)).foregroundStyle(.white).lineLimit(1)
-                        .help(session.displayName)
-                    Spacer(minLength: 4)
-                    TimelineView(.periodic(from: .now, by: 30)) { ctx in
-                        Text(shortAgo(session.updatedAt, now: ctx.date))
-                            .font(look.font(10, .medium).monospacedDigit()).foregroundStyle(Theme.textFaint)
-                    }
-                    .opacity(hover ? 0 : 1)
+        HStack(spacing: 9) {
+            StatusGlyph(status: status, size: 8.5, heat: heatLevel, pop: 1.9)
+                .frame(width: 12)
+            Image(systemName: "staroflife.fill")
+                .font(look.font(11, .bold))
+                .foregroundStyle(heatLevel == .hot ? AnyShapeStyle(Fire.gradient) : AnyShapeStyle(Theme.claude))
+                .frame(width: 15)
+            Text(session.displayName)
+                .font(look.font(13, .medium)).foregroundStyle(.white).lineLimit(1)
+            if tasks > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.triangle.branch").font(look.font(9.5, .medium))
+                    Text("\(tasks)").font(look.font(11, .medium).monospacedDigit())
                 }
-                HStack(spacing: 5) {
-                    Text(statusText).font(look.font(10.5, .semibold)).foregroundStyle(statusColor)
-                    Text("·").font(look.font(10.5)).foregroundStyle(Theme.textFaint)
-                    Text(meta).font(look.font(10.5)).foregroundStyle(Theme.textDim).lineLimit(1).truncationMode(.middle)
-                }
-                if let heat, heat.level > .none {
-                    HeatBadge(heat: heat, fontSize: 9.5).padding(.top, 1)
-                }
-                if let prompt {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Image(systemName: session.promptIsTaskReport ? "gearshape" : "arrow.turn.down.right").font(look.font(8.5, .semibold))
-                        Text(prompt).font(look.font(10.5)).lineLimit(1)
-                    }
-                    .foregroundStyle(Theme.textFaint)
-                    .padding(.top, 1)
-                }
+                .foregroundStyle(Theme.textDim)
+                .help(tasks == 1 ? "1 background task" : "\(tasks) background tasks")
             }
+            Spacer(minLength: 6)
+            RowIcon(systemName: "mic", size: 11.5, action: onTalk).help("Talk to this agent")
+            RowIcon(systemName: "xmark", size: 10, action: onHide).help("Hide from the list")
         }
-        .padding(.horizontal, 10).padding(.vertical, 9)
+        .padding(.leading, 9).padding(.trailing, 4).padding(.vertical, 4)
+        .frame(minHeight: 30)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(needsYou ? Theme.amber.opacity(hover ? 0.12 : 0.07) : Color.white.opacity(hover ? 0.075 : 0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(needsYou ? Theme.amber.opacity(0.28) : Color.white.opacity(hover ? 0.12 : 0.06), lineWidth: 0.75)
-                .opacity(heatLevel > .none ? 0 : 1)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(rowFill)
         )
         .overlay {
-            if heatLevel > .none { FireBorder(cornerRadius: 12, level: heatLevel) }
+            if heatLevel > .none { FireBorder(cornerRadius: 9, level: heatLevel) }
         }
-        .overlay(alignment: .topTrailing) {
-            if hover {
-                HStack(spacing: 0) {
-                    IconButton(systemName: "mic", size: 10.5, action: onTalk).help("Talk to this agent")
-                    IconButton(systemName: "xmark", size: 9.5, action: onHide).help("Hide from the list")
-                }
-                .padding(4)
-                .transition(.opacity)
-            }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .onTapGesture(perform: onOpen)
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
+        .help(details)
+        .onChange(of: session.shownStatus) { new in
+            guard new == .done || new == .ready || new == .idle else { return }
+            flash = 1
+            withAnimation(.easeOut(duration: 1.6).delay(0.25)) { flash = 0 }
+        }
     }
 
+    private var rowFill: Color {
+        if flash > 0 { return Theme.green.opacity(0.16 * flash + (hover ? 0.04 : 0)) }
+        if needsYou && waiting > 0 { return Theme.amber.opacity(hover ? 0.13 : 0.08) }
+        return Color.white.opacity(hover ? 0.065 : 0)
+    }
+}
+
+/// Mic and close on each agent row: dim until you point at them.
+private struct RowIcon: View {
+    var systemName: String
+    var size: CGFloat
+    var action: () -> Void
+    @ViewState private var hover = false
+    @ObservedObject private var look = Appearance.shared
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(look.font(size, .medium))
+                .foregroundStyle(Color.white.opacity(hover ? 0.95 : 0.45))
+                .frame(width: 24, height: 22)
+                .background(Circle().fill(Color.white.opacity(hover ? 0.1 : 0)).frame(width: 22, height: 22))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale())
+        .focusable(false)
+        .onHover { hover = $0 }
+    }
 }
 
 /// "now", "4m", "2h", "3d".
@@ -411,8 +416,7 @@ struct SettingsMenuView: View {
         .padding(8)
         .frame(width: 272 * look.textScale)
         .background(Glass(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.45), radius: 20, y: 8)
-        .padding(16)
+        .floatingPanelShadow()
         .preferredColorScheme(.dark)
     }
 
@@ -554,8 +558,7 @@ struct LookSoundView: View {
         .padding(10)
         .frame(width: 290 * look.textScale)
         .background(Glass(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.45), radius: 20, y: 8)
-        .padding(16)
+        .floatingPanelShadow()
         .preferredColorScheme(.dark)
     }
 
@@ -637,8 +640,7 @@ struct WorkspaceFilterView: View {
         .padding(8)
         .frame(width: 260 * look.textScale)
         .background(Glass(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.45), radius: 20, y: 8)
-        .padding(16)
+        .floatingPanelShadow()
         .preferredColorScheme(.dark)
     }
 

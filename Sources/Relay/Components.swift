@@ -66,13 +66,15 @@ struct PageDots: View {
     var index: Int
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 3.5) {
             ForEach(0..<min(count, 7), id: \.self) { i in
+                let on = i == min(index, 6)
                 Capsule()
-                    .fill(i == min(index, 6) ? Theme.blue : Color.white.opacity(0.25))
-                    .frame(width: i == min(index, 6) ? 12 : 4, height: 4)
+                    .fill(on ? Theme.blue : Color.white.opacity(0.28))
+                    .frame(width: on ? 14 : 5, height: 5)
             }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: index)
         .opacity(count > 1 ? 1 : 0)
     }
 }

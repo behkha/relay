@@ -44,21 +44,28 @@ final class Appearance: ObservableObject {
     }
 }
 
-/// Blurred, translucent panel background (the "glass" behind every Relay panel).
+/// The panel behind the card, the agents list and the menus: solid near-black with a faint rim
+/// (One's look). "Black" goes all the way to black.
 struct Glass: View {
     var cornerRadius: CGFloat = 18
     @ObservedObject private var look = Appearance.shared
 
     var body: some View {
-        ZStack {
-            VisualEffect(material: .hudWindow)
-            Color.black.opacity(look.tint)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.11), lineWidth: 0.75)
-        )
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(look.theme == .black ? Color(hex: "#090909") : Theme.card)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.09), lineWidth: 0.75)
+            )
+    }
+}
+
+extension View {
+    /// The soft shadow under every floating panel, with room around it so the window never clips it.
+    func floatingPanelShadow() -> some View {
+        shadow(color: .black.opacity(0.32), radius: 14, y: 7)
+            .padding(16)
+            .padding(.bottom, 8)
     }
 }
 
@@ -89,10 +96,11 @@ struct KeyHint: View {
     var body: some View {
         Text(key)
             .font(look.font(9.5, .semibold))
-            .foregroundStyle(onLight ? Color.black.opacity(0.5) : Color.white.opacity(0.55))
+            .foregroundStyle(onLight ? Color.black.opacity(0.5) : Color.white.opacity(0.6))
             .padding(.horizontal, key.count > 1 ? 5 : 0)
-            .frame(minWidth: 16, minHeight: 16)
-            .background(RoundedRectangle(cornerRadius: 4.5).fill(onLight ? Color.black.opacity(0.1) : Color.white.opacity(0.1)))
+            .frame(minWidth: 17, minHeight: 17)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(onLight ? Color.black.opacity(0.09) : Color.white.opacity(0.11)))
     }
 }
 
@@ -115,11 +123,25 @@ struct AgentMark: View {
     }
 }
 
-/// Spinner arc / dot used for agents in the pill and lists.
+/// Spinner arc / dot used for agents in the pill and lists. Pops when the agent stops working.
 struct StatusGlyph: View {
     var status: AgentStatus
     var size: CGFloat = 9
     var heat: HeatLevel = .none
+    /// How far it swells when it changes (0 turns the pop off).
+    var pop: CGFloat = 1.6
+
+    var body: some View {
+        GlyphFace(status: status, size: size, heat: heat)
+            .id("\(status == .working)-\(heat == .hot)")   // fresh view (and animation) every time work starts again
+            .popOnChange(of: status, strength: pop) { $0 != .working && pop > 0 }
+    }
+}
+
+private struct GlyphFace: View {
+    var status: AgentStatus
+    var size: CGFloat
+    var heat: HeatLevel
     @ViewState private var spin = false
 
     var body: some View {
@@ -137,8 +159,8 @@ struct StatusGlyph: View {
                 }
             } else if status == .working {
                 Circle()
-                    .trim(from: 0, to: 0.62)
-                    .stroke(Theme.blue, style: StrokeStyle(lineWidth: max(1.6, size * 0.2), lineCap: .round))
+                    .trim(from: 0, to: 0.66)
+                    .stroke(Theme.blue, style: StrokeStyle(lineWidth: max(1.6, size * 0.24), lineCap: .round))
                     .rotationEffect(.degrees(spin ? 360 : 0))
                     .onAppear {
                         withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spin = true }
@@ -148,7 +170,6 @@ struct StatusGlyph: View {
             }
         }
         .frame(width: size, height: size)
-        .id("\(status == .working)-\(heat == .hot)")   // fresh view (and animation) every time work starts again
     }
 }
 

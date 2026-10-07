@@ -28,6 +28,12 @@ final class UIState: ObservableObject {
     /// meant for one request can never land on the next one.
     private(set) var displayChangedAt = Date.distantPast
     @Published var pillExpanded = false
+    /// The talk bar is open (the pill stays expanded meanwhile).
+    @Published var talking = false
+    /// The talk bar's microphone is on (the pill's mic turns into level bars).
+    @Published var listening = false
+    /// The card's "?" key map is showing.
+    @Published var showKeys = false
     @Published var replyFocused = false
     /// Per-item answers being built for multi-question / multi-select cards.
     @Published var questionStep = 0
@@ -54,6 +60,8 @@ final class UIState: ObservableObject {
         let id = UUID()
         let itemId: String
         let label: String
+        /// What the undo bar shows, when it isn't the label (the message you sent).
+        var barText: String?
         let kind: Kind
         let duration: Double
         let started = Date()
@@ -72,14 +80,14 @@ final class UIState: ObservableObject {
 
     @Published private(set) var commit: Commit?
 
-    func schedule(itemId: String, label: String, kind: Commit.Kind = .sent, duration: Double = 2.0,
+    func schedule(itemId: String, label: String, barText: String? = nil, kind: Commit.Kind = .sent, duration: Double = 2.0,
                   action: @escaping () -> Void) {
         autoOpened = false
         flushCommit()
         let snap = Snapshot(questionStep: questionStep, multiSelection: multiSelection, collected: collected,
                             replyText: draftBeforeSend ?? replyText, attachShot: attachShot)
         draftBeforeSend = nil
-        let c = Commit(itemId: itemId, label: label, kind: kind, duration: duration, action: action, snapshot: snap)
+        let c = Commit(itemId: itemId, label: label, barText: barText, kind: kind, duration: duration, action: action, snapshot: snap)
         commit = c
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, self.commit?.id == c.id else { return }

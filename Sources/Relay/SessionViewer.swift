@@ -42,6 +42,8 @@ final class TranscriptReader: ObservableObject {
         var title: String?
         var prompt: String?
         var activity: String?
+        /// The agent's last words this turn (the lead-in to a question it asks).
+        var said: String?
         /// Background tasks still running.
         var backgroundTasks = 0
     }
@@ -66,7 +68,10 @@ final class TranscriptReader: ObservableObject {
         // Older than a day is a task whose end Relay never saw.
         let cutoff = max(since ?? .distantPast, Date().addingTimeInterval(-24 * 3600))
         let running = state.background.values.filter { $0 >= cutoff }.count
-        return Summary(title: state.title, prompt: prompt, activity: activityLine(Array(tools)), backgroundTasks: running)
+        let said = entries[(lastUser.map { $0 + 1 } ?? 0)...].last { $0.kind == .assistant }?.text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Summary(title: state.title, prompt: prompt, activity: activityLine(Array(tools)),
+                       said: said?.isEmpty == false ? said : nil, backgroundTasks: running)
     }
 
     /// One-line summary of a turn's tool calls, grouped by kind in the order they first happened:

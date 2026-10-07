@@ -13,7 +13,7 @@ BIN="$(swift build -c release --arch arm64 --show-bin-path)/Relay"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-echo "==> Recording (about 25 seconds; keep the mouse away from the right edge)"
+echo "==> Recording (about 30 seconds; keep the mouse away from the right edge)"
 RELAY_DEMO=1 RELAY_DEMO_OUT="$TMP/demo.mov" "$BIN"
 [ -s "$TMP/demo.mov" ] || { echo "recording failed"; exit 1; }
 

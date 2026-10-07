@@ -8,8 +8,14 @@ import Combine
 /// It goes to the agent on the card, the agent you picked, or the one it is clearly meant for.
 /// ⏎ (or another double-tap) sends, ⇧⏎ adds a line, esc discards.
 final class VoiceController: NSObject, ObservableObject {
-    @Published var open = false
-    @Published var recording = false
+    @Published var open = false {
+        didSet { if open { ui.talking = true } }
+    }
+    @Published var recording = false {
+        didSet { ui.listening = recording }
+    }
+    /// Shown for a moment after a send: who got it ("@claude-3") and where it runs.
+    @Published var sentTo: (handle: String, place: String)?
     @Published var text = ""
     @Published var status = ""
     @Published var targetLabel: String?
@@ -75,6 +81,7 @@ final class VoiceController: NSObject, ObservableObject {
         self.targetSession = session ?? target?.sessionId
         barSession += 1
         sending = false
+        sentTo = nil
         withScreenshot = screenshot
         text = ""
         dictationBase = ""
@@ -185,6 +192,32 @@ final class VoiceController: NSObject, ObservableObject {
         }
     }
 
+    /// Demo mode only: plays a dictation into the bar and shows who got it, without the
+    /// microphone and without sending anything anywhere.
+    func demoTalk(_ words: String, to sessionId: String) {
+        guard Demo.isOn else { return }
+        barSession += 1
+        target = nil
+        targetSession = sessionId
+        targetLabel = nil
+        text = ""
+        status = ""
+        sentTo = nil
+        withScreenshot = false
+        showBar()
+        recording = true
+        let parts = words.split(separator: " ").map(String.init)
+        for i in parts.indices {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 + Double(i) * 0.32) { [weak self] in
+                self?.text = parts[0...i].joined(separator: " ")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 + Double(parts.count) * 0.32 + 0.6) { [weak self] in
+            self?.recording = false
+            self?.finishSend(to: sessionId)
+        }
+    }
+
     // MARK: Delivery
 
     private func deliver(_ words: String, session: Int) {
@@ -193,14 +226,14 @@ final class VoiceController: NSObject, ObservableObject {
         if let target, store.items.contains(where: { $0.id == target.id }) {
             // A permission answer is judged on the words alone ("yes" must stay "yes").
             store.reply(to: target, text: target.kind == .permission ? words : full)
-            finishSend()
+            finishSend(to: target.sessionId)
             return
         }
         if let targetSession {
             // Explicit target: never re-route to another agent, even if its card is gone.
             if store.sessions[targetSession] != nil {
                 store.sendText(full, toSession: targetSession)
-                finishSend()
+                finishSend(to: targetSession)
             } else {
                 status = "That agent is gone. Your text is still here."
                 sending = false
@@ -219,7 +252,7 @@ final class VoiceController: NSObject, ObservableObject {
             }
             // Routed (guessed) messages are plain messages; sendText refuses to answer prompts with them.
             self.store.sendText(full, toSession: sessionId)
-            self.finishSend()
+            self.finishSend(to: sessionId)
         }
     }
 
@@ -246,6 +279,7 @@ final class VoiceController: NSObject, ObservableObject {
             let p = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 110))
             let h = SizeReportingHostingView(rootView: AnyView(QuickBar(voice: self)))
             h.onFittingSizeChange = { [weak self] in self?.layoutBar() }
+            h.layerContentsPlacement = .right
             p.contentView = h
             panel = p
             host = h
@@ -254,7 +288,9 @@ final class VoiceController: NSObject, ObservableObject {
         layoutBar()
         if !NSApp.isActive { previousApp = NSWorkspace.shared.frontmostApplication }
         NSApp.activate(ignoringOtherApps: true)
-        panel?.makeKeyAndOrderFront(nil)
+        // macOS may refuse to activate Relay; the bar must come up (and take keys) regardless.
+        panel?.orderFrontRegardless()
+        panel?.makeKey()
         DispatchQueue.main.async {
             self.layoutBar()
             NotificationCenter.default.post(name: .relayFocusQuickBar, object: nil)
@@ -278,16 +314,32 @@ final class VoiceController: NSObject, ObservableObject {
         panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
     }
 
-    private func finishSend() {
+    /// The bar turns into "✓ Sent to @claude-3 · project" for a moment, then goes away.
+    private func finishSend(to sessionId: String?) {
         text = ""
         sending = false
-        close()
+        guard let sessionId, let s = store.sessions[sessionId] else { close(); return }
+        sentTo = ("@\(s.handle)", s.folderName)
+        open = false
+        removeKeyMonitor()
+        giveFocusBack()
+        let session = barSession
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, session == self.barSession, !self.open else { return }
+            self.close()
+        }
     }
 
     private func close() {
         open = false
+        sentTo = nil
+        ui.talking = false
         panel?.orderOut(nil)
         removeKeyMonitor()
+        giveFocusBack()
+    }
+
+    private func giveFocusBack() {
         if let prev = previousApp, prev != NSRunningApplication.current, NSApp.isActive { prev.activate(options: []) }
         previousApp = nil
     }
@@ -318,61 +370,128 @@ final class VoiceController: NSObject, ObservableObject {
     }
 }
 
+/// The talk bar: a black slab next to the pill that fills with your words as you speak,
+/// then says who got them.
 struct QuickBar: View {
     @ObservedObject var voice: VoiceController
     @ObservedObject private var look = Appearance.shared
     @FocusState private var focused: Bool
 
+    private var visible: Bool { voice.open || voice.sentTo != nil }
+    private var empty: Bool { voice.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 8) {
-                TextField(voice.recording && voice.text.isEmpty ? "Listening…" : "What should happen with this?",
-                          text: Binding(get: { voice.text }, set: { voice.text = $0; voice.userTyped() }),
+        ZStack(alignment: .leading) {
+            if let sent = voice.sentTo {
+                sentRow(sent).transition(.opacity.combined(with: .scale(scale: 0.98)))
+            } else {
+                inputRow.transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .frame(width: 330 * look.textScale, alignment: .leading)
+        .frame(minHeight: 48)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(hex: "#0D0D0D")))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 0.75))
+        .shadow(color: .black.opacity(0.32), radius: 16, y: 8)
+        .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 28)
+        .scaleEffect(visible ? 1 : 0.9, anchor: .trailing)
+        .opacity(visible ? 1 : 0)
+        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: visible)
+        .animation(.easeOut(duration: 0.2), value: voice.sentTo?.handle)
+        .preferredColorScheme(.dark)
+        .onReceive(NotificationCenter.default.publisher(for: .relayFocusQuickBar)) { _ in focused = true }
+    }
+
+    private var inputRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .center, spacing: 10) {
+                TextField(placeholder,
+                          // Only a real edit counts as typing: the field echoing dictated text back must not stop it.
+                          text: Binding(get: { voice.text }, set: { if $0 != voice.text { voice.text = $0; voice.userTyped() } }),
                           axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(look.font(13))
+                    .font(look.font(14.5))
                     .foregroundStyle(.white)
                     .lineLimit(1...6)
                     .focused($focused)
-                Button { voice.recording ? voice.stopListening() : voice.listen() } label: {
-                    Image(systemName: voice.recording ? "waveform" : "mic")
-                        .font(look.font(12, .semibold))
-                        .foregroundStyle(voice.recording ? Color(hex: "#FF5F5F") : Color.white.opacity(0.8))
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(Color.white.opacity(voice.recording ? 0.12 : 0.06)))
+                if voice.withScreenshot {
+                    Image(systemName: "camera.fill").font(look.font(10.5)).foregroundStyle(Theme.textFaint)
+                        .help("A screenshot goes with it")
                 }
-                .buttonStyle(.plain)
+                Button { voice.recording ? voice.stopListening() : voice.listen() } label: {
+                    Group {
+                        if voice.recording {
+                            ListeningBars(height: 12)
+                        } else {
+                            Image(systemName: "mic").font(look.font(12.5, .medium)).foregroundStyle(Color.white.opacity(0.7))
+                        }
+                    }
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressScale())
                 .focusable(false)
                 .help(voice.recording ? "Stop listening" : "Talk")
-                Button { voice.send() } label: {
-                    Image(systemName: "arrow.up")
-                        .font(look.font(11, .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(voice.text.trimmingCharacters(in: .whitespaces).isEmpty ? Color.white.opacity(0.08) : Theme.blue))
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-            }
-            HStack(spacing: 6) {
-                Text("⏎ send · ⇧⏎ new line · esc discard")
-                if let t = voice.targetLabel { Text("· to \(t)").lineLimit(1) } else { Text("· to the right agent") }
-                if voice.withScreenshot { Image(systemName: "camera.fill") }
-                Spacer(minLength: 0)
-                if !voice.status.isEmpty && !(voice.recording && voice.status == "Listening…") {
-                    Text(voice.status).lineLimit(1)
+                if !empty && !voice.recording {
+                    Button { voice.send() } label: {
+                        Image(systemName: "arrow.up")
+                            .font(look.font(11, .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(Theme.blue))
+                    }
+                    .buttonStyle(PressScale())
+                    .focusable(false)
+                    .help("Send  (⏎)")
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
                 }
             }
-            .font(look.font(10))
-            .foregroundStyle(Theme.textFaint)
+            .animation(.spring(response: 0.25, dampingFraction: 0.75), value: empty)
+            .animation(.spring(response: 0.25, dampingFraction: 0.75), value: voice.recording)
+            if !voice.status.isEmpty && !(voice.recording && voice.status == "Listening…") {
+                Text(voice.status).font(look.font(10.5)).foregroundStyle(Theme.textFaint).lineLimit(2)
+            }
         }
-        .padding(.horizontal, 13).padding(.vertical, 10)
-        .frame(width: 400 * look.textScale)
-        .background(Glass(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.45), radius: 18, y: 6)
-        .padding(14)
-        .preferredColorScheme(.dark)
-        .onReceive(NotificationCenter.default.publisher(for: .relayFocusQuickBar)) { _ in focused = true }
+    }
+
+    private var placeholder: String {
+        if voice.recording && voice.text.isEmpty {
+            return voice.targetLabel.map { "Listening for \($0)…" } ?? "Listening…"
+        }
+        return voice.targetLabel.map { "Tell \($0)…" } ?? "Say or type it. Relay finds the agent."
+    }
+
+    private func sentRow(_ sent: (handle: String, place: String)) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: "checkmark").font(look.font(12, .semibold)).foregroundStyle(Theme.green)
+            (Text("Sent to ").foregroundColor(Color.white.opacity(0.7))
+             + Text(sent.handle).foregroundColor(.white).fontWeight(.semibold)
+             + Text(" · \(sent.place)").foregroundColor(Color.white.opacity(0.5)))
+                .font(look.font(14))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+            PulsingDot(color: Theme.blue, size: 9)
+        }
+    }
+}
+
+/// A dot with a soft ring that keeps breathing out of it.
+struct PulsingDot: View {
+    var color: Color
+    var size: CGFloat
+    @ViewState private var pulse = false
+
+    var body: some View {
+        ZStack {
+            Circle().fill(color.opacity(0.35))
+                .scaleEffect(pulse ? 2.2 : 1)
+                .opacity(pulse ? 0 : 0.9)
+            Circle().fill(color)
+        }
+        .frame(width: size, height: size)
+        .onAppear { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { pulse = true } }
     }
 }
 
