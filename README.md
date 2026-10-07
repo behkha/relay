@@ -18,7 +18,7 @@ so you can stop `⌘-Tab`-ing through 14 terminal tabs like it's 1997.
 <br><br>
 
 <!-- Re-record with scripts/record-demo.sh (scripted demo mode, mock data only). -->
-<img src="docs/demo.gif" alt="Relay demo: an agent asks a question, the inbox card opens, two prompts are answered from the keyboard, a finished turn shows next steps, and the agents list shows one agent on fire at 312% CPU" width="880">
+<img src="docs/demo.gif" alt="Relay demo: an agent asks a question and 'Agent needs you' slides out of the pill with the mascot, the inbox card opens, two prompts are answered from the keyboard, a reply goes to a finished turn, a spoken message is routed to an agent, the agents list lights up as agents finish, and the empty inbox says nothing needs you" width="880">
 
 </div>
 
@@ -55,7 +55,7 @@ It started as a re-creation of [One](https://getone.one) and then grew one featu
 
 ### The edge pill
 
-A thin sliver on the right edge of the screen, one glyph per agent. Think of it as `htop` for your attention:
+A thin black tab that flares into the right edge of the screen, one glyph per agent. Think of it as `htop` for your attention:
 
 | Glyph | State |
 | --- | --- |
@@ -63,31 +63,35 @@ A thin sliver on the right edge of the screen, one glyph per agent. Think of it 
 | Amber | Blocked on you |
 | Green | Done |
 
-Hover to expand the column: **inbox** (a dot means something is waiting), **agents**, **workspaces**, **talk**, **talk with a screenshot**, and **settings** (`…`). Every button has a tooltip, because hidden UI without labels is a crime.
+A glyph pops when its agent changes state, so you see an agent finish out of the corner of your eye. Hover to expand the column of glossy black buttons: **inbox** (a dot means something is waiting), **agents**, **workspaces** (the mascot), **talk**, **talk with a screenshot**, and **settings** (`…`). While you talk the mic turns into live red level bars. Every button has a tooltip, because hidden UI without labels is a crime.
+
+When an agent asks something, **Agent needs you** slides out of the pill and the mascot (Relay's speech bubble with eyes) drops out from behind it, then both tuck back in as the card opens.
 
 ### The inbox card
 
-A glass card that pops open by itself the moment an agent asks something. The header shows the session title, `1 of N` and the key hints; below that, the agent's status and project, the instruction it started from (blue bubble) and a one-line digest of what it did (`Explored · Read cart.js · Ran · npm`). It speaks every interrupt type Claude Code emits:
+A solid black card that grows out of the pill the moment an agent asks something. The header shows the session title, page dots, and `‹ J` `› K` `?` `× esc`; `?` (or the `?` key) shows every shortcut. Below that, the agent's status and project, the instruction it started from (blue bubble on the right) and what the agent said right before it asked (grey bubble on the left). It speaks every interrupt type Claude Code emits:
 
 - **`AskUserQuestion`**: single-select, multi-select and multi-question flows with step chips (`● Limit by ○ On limit ○ Submit`) and a review step before you commit.
 - **Permission prompts**: the exact option set Claude Code offers (Yes / Yes, and don't ask again for `<rule>` / Yes, and switch to `<mode>` / No). Or just type or say it: "yes" and "go ahead" approve, "no" declines, and anything else declines *and* tells Claude what to do instead.
-- **Finished turns**: the reply rendered as Markdown, a reply box, **Kill agent** (terminal agents) and **Discard**, plus **Next steps**: two likely follow-ups predicted by Claude Haiku on that agent's own account. Click to send, `⤢` to edit first. The helper runs with no tools, none of your hooks or plugins, and treats the agent's text strictly as data.
+- **Finished turns**: the reply in a grey bubble (rendered as Markdown when it's long), a reply box, then **Next steps** with **Kill agent** (terminal agents) and **Discard** on the same line: two likely follow-ups predicted by Claude Haiku on that agent's own account. Click to send, `⤢` to edit first. The helper runs with no tools, none of your hooks or plugins, and treats the agent's text strictly as data.
 
-Filter chips on top, **All · Asking · Done**, each with a count, pick what the card pages through: *Asking* is questions, permission prompts and MCP input requests; *Done* is finished turns and idle agents. The pill's badge still counts everything waiting on you, and a new question that the filter would hide flips it back to All, so nothing blocks in silence.
+When both kinds are waiting, filter chips on top, **All · Asking · Done**, each with a count, pick what the card pages through: *Asking* is questions, permission prompts and MCP input requests; *Done* is finished turns and idle agents. The pill's badge still counts everything waiting on you, and a new question that the filter would hide flips it back to All, so nothing blocks in silence.
+
+Nothing waiting? The card says so: "Nothing needs you. Suspiciously quiet."
 
 ### Undo, because humans are non-deterministic
 
-Every answer, message, discard or kill runs after a two-second `esc to undo` bar. It's a write-ahead log for your bad decisions.
+Every answer, message, discard or kill runs after a two-second `esc to undo` bar with a draining blue line (a message shows its own words: `✓ push to prod`). It's a write-ahead log for your bad decisions.
 
 ### Agents list
 
-Click the glyphs in the pill to see every agent, grouped by account (or by project). Each row shows the session name (the one you set with `/rename` or in the Claude app, else Claude Code's own title), status, project, terminal, last instruction and last activity. Click to open the session; the mic talks to just that agent.
+Click the glyphs in the pill to see every agent, grouped by account (or by project), one compact line each: status glyph, session name (the one you set with `/rename` or in the Claude app, else Claude Code's own title), background tasks (`⑂ 2`), and a mic and `×` always at hand. Rows cascade in as the list opens; when an agent finishes, its dot pops green and its row glows for a moment. Hover a row for status, project, terminal, load and last instruction. Click to open the session; the mic talks to just that agent.
 
 ### Heat: a thermal profiler for your agents
 
 Relay samples the CPU of each agent's **entire process tree** every 2.5 s: the `claude` process plus every build, test run and dev server it spawned, including children that already exited. It cross-references that with macOS's thermal state.
 
-- More than ~2 cores busy, or the top consumer while macOS reports the Mac is hot: the agent **catches fire**. Flames rise off its avatar, its row burns at the edges, it shows its load (`312% CPU`), its pill glyph becomes a flickering ember and a toast names the culprit.
+- More than ~2 cores busy, or the top consumer while macOS reports the Mac is hot: the agent **catches fire**. Its row burns at the edges, its glyph becomes a flickering ember (in the pill and the list), its load (`312% CPU`) shows on hover and in the main window, and a toast names the culprit.
 - Above ~1 core it **smolders** instead.
 - Thresholds have hysteresis, so flags don't flap. (Yes, it's a Schmitt trigger. Yes, I'm proud of it.)
 
@@ -97,7 +101,7 @@ The live conversation rendered as Markdown: your prompts, Claude's replies, ever
 
 ### Talk
 
-Double-tap `Option` (or click the mic). A small bar opens next to the pill and transcribes as you speak; you can type or edit too. `⏎` (or another double-tap) sends, `⇧⏎` adds a line, `esc` discards. The message goes to the agent on the card, the agent you picked, or the one it's obviously meant for, resolved by name, project folder, or a Claude Haiku router as the fallback.
+Double-tap `Option` (or click the mic). A black bar opens level with the pill's mic and fills with your words as you speak; you can type or edit too. `⏎` (or another double-tap) sends, `⇧⏎` adds a line, `esc` discards. The message goes to the agent on the card, the agent you picked, or the one it's obviously meant for, resolved by name, project folder, or a Claude Haiku router as the fallback. The bar then tells you where it went (`✓ Sent to @claude-5 · ledger-db`) before it gets out of the way.
 
 ### Phone
 
@@ -158,6 +162,7 @@ Focus the card with `⌃⌥Space`, then:
 | `V` | Talk |
 | `E` | Discard |
 | `⇧X` | Kill agent |
+| `?` | Show these shortcuts on the card |
 | `O` | Open the session |
 | `T` | Open the terminal |
 | `esc` | Undo, then close |
@@ -276,6 +281,7 @@ The script posts each event to Relay on `127.0.0.1` with a random token from `se
 | `PowerAssertion.swift` | Keeps the Mac awake while agents work |
 | `SelfTest.swift` | `Relay --self-test`, run by `scripts/selftest.sh` |
 | `CardView.swift`, `PillView.swift`, `Panels.swift` | The UI you actually look at |
+| `Mascot.swift` | The mascot, "Agent needs you", and the pill's chrome, level bars and status pops |
 | `Markdown.swift` | A Markdown renderer, because of course |
 | `Resources/relay-hook.sh` | The bridge Claude Code calls |
 | `Resources/remote.html`, `sw.js`, `manifest.webmanifest` | The phone page and its Home Screen app files |
@@ -310,6 +316,7 @@ rm -rf /Applications/Relay.app ~/Library/Application\ Support/Relay
 - **Scope**: Claude Code only. Codex, OpenCode and Pi aren't supported, and neither are agents on other machines.
 - **AI helpers**: voice routing and next-step suggestions use Claude Haiku through your own Claude Code login, with no tools.
 - **Workspaces**: multiple Claude accounts, fully isolated. This is the reason Relay exists.
+- **Look**: the same black pill, card, talk bar and animations, but Relay keeps its own mascot (the speech bubble from its icon) instead of One's cloud.
 
 ---
 
