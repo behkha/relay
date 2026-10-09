@@ -460,7 +460,7 @@ struct CardView: View {
             }
             if !store.visibleItems.isEmpty { InboxFilterBar(store: store) }
             HStack(alignment: .top, spacing: 12) {
-                Mascot(style: .light, size: 30).padding(.top, 1)
+                Mascot(size: 30).padding(.top, 1)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(emptyTitle).font(look.font(13, .semibold)).foregroundStyle(.white)
                     Text(emptyDetail)

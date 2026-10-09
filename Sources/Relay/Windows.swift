@@ -20,6 +20,7 @@ final class FloatingPanel: NSPanel {
         isMovable = false
         isReleasedWhenClosed = false
         animationBehavior = .none
+        acceptsMouseMovedEvents = true   // the mascot's eyes follow the cursor over these too
     }
 }
 
@@ -32,6 +33,7 @@ final class OverlayController: NSObject {
     private var cardHost: SizeReportingHostingView<AnyView>!
     private var bag = Set<AnyCancellable>()
     private var collapseWork: DispatchWorkItem?
+    private var shrinkWork: DispatchWorkItem?
     private var previousApp: NSRunningApplication?
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
@@ -143,6 +145,12 @@ final class OverlayController: NSObject {
             DispatchQueue.main.async { self.layoutCard() }
         }.store(in: &bag)
         store.itemArrived.receive(on: RunLoop.main).sink { [weak self] item in self?.itemArrived(item) }.store(in: &bag)
+        // The mascot's mood, and its nudges when a question has been left waiting.
+        MoodEngine.shared.attach(store: store, ui: ui)
+        MoodEngine.shared.nudge.receive(on: RunLoop.main).sink { [weak self] text in
+            guard let self, !self.ui.cardOpen, self.announcement.phase == .hidden else { return }
+            self.announce(text, then: nil)
+        }.store(in: &bag)
         // The pill stays open while you talk; it needs its wide frame for that.
         ui.$talking.removeDuplicates().dropFirst().receive(on: RunLoop.main).sink { [weak self] talking in
             guard let self else { return }
@@ -187,7 +195,22 @@ final class OverlayController: NSObject {
     var pillFrame: NSRect { pill.frame }
 
     func positionPill() {
-        guard let rect = pillRect(expanded: ui.pillExpanded || ui.cardOpen || ui.talking) else { return }
+        let open = ui.pillExpanded || ui.cardOpen || ui.talking
+        guard let rect = pillRect(expanded: open) else { return }
+        shrinkWork?.cancel()
+        shrinkWork = nil
+        if !open && pill.frame.width > rect.width {
+            // The column flows back into one piece and then into the sliver; narrow the window
+            // once that has played out, so it isn't cut off halfway.
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !(self.ui.pillExpanded || self.ui.cardOpen || self.ui.talking),
+                      let rect = self.pillRect(expanded: false) else { return }
+                self.pill.setFrame(rect, display: true)
+            }
+            shrinkWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55, execute: work)
+            return
+        }
         pill.setFrame(rect, display: true)
     }
 
@@ -220,7 +243,8 @@ final class OverlayController: NSObject {
 
     // MARK: Announcement
 
-    static let toastSize = NSSize(width: 300, height: 110)
+    /// Tall enough for the mascot puffed up to its angriest.
+    static let toastSize = NSSize(width: 300, height: 140)
 
     /// Slides "Agent needs you" out of the pill with the mascot, then runs `then` as it leaves.
     private func announce(_ text: String, then: (() -> Void)?) {
@@ -271,6 +295,7 @@ final class OverlayController: NSObject {
         var y = pillFrame.midY - size.height / 2
         y = min(max(y, vf.minY + 4), vf.maxY - size.height - 4)
         card.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        settle(cardHost)
     }
 
     private func contentChanged() {
@@ -319,7 +344,7 @@ final class OverlayController: NSObject {
                 // Stay open while the mouse is over the pill or the "…" menu is up.
                 if NSMouseInRect(NSEvent.mouseLocation, self.pill.frame, false) || self.ui.panelOpen { return }
                 self.ui.pillExpanded = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.positionPill() }
+                self.positionPill()
             }
             collapseWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
@@ -469,13 +494,23 @@ final class OverlayController: NSObject {
         }
         y = min(max(y, vf.minY + 4), vf.maxY - size.height - 4)
         side.setFrame(NSRect(x: pillLeft - size.width + 12, y: y, width: size.width, height: size.height), display: true)
+        settle(sideHost)
         if ui.subPanel != nil {
             subHost.layoutSubtreeIfNeeded()
             let s2 = subHost.fittingSize
             var y2 = side.frame.maxY - s2.height
             y2 = min(max(y2, vf.minY + 4), vf.maxY - s2.height - 4)
             sub.setFrame(NSRect(x: side.frame.minX - s2.width + 24, y: y2, width: s2.width, height: s2.height), display: true)
+            settle(subHost)
         }
+    }
+
+    /// SwiftUI can keep laying a panel out for the window's previous size after a resize (seen
+    /// when the panel opens from a click: it drew at its old 1×1 size, so only a corner showed).
+    /// A fresh layout pass makes it take the new size before the window is seen.
+    private func settle(_ host: NSView) {
+        host.needsLayout = true
+        host.layoutSubtreeIfNeeded()
     }
 
     // MARK: Keys

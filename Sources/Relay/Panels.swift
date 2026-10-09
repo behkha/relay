@@ -105,7 +105,7 @@ struct AgentsListView: View {
 
     private var emptyState: some View {
         HStack(alignment: .top, spacing: 12) {
-            Mascot(style: .light, size: 30).padding(.top, 1)
+            Mascot(size: 30).padding(.top, 1)
             VStack(alignment: .leading, spacing: 3) {
                 Text("No agents running").font(look.font(13, .semibold)).foregroundStyle(.white)
                 Text("Start Claude Code in any terminal or the Claude app.")

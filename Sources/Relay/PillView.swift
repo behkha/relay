@@ -14,24 +14,75 @@ struct PillView: View {
     var onHome: () -> Void
     var onMore: () -> Void
 
+    @Namespace private var glass
+    /// The column is on screen (rather than the sliver).
+    @ViewState private var columnShown = false
+    /// The column's pieces have pulled apart; before that they sit as one piece of glass.
+    @ViewState private var split = false
+    @ViewState private var nextStep: DispatchWorkItem?
+
     private var isExpanded: Bool { ui.pillExpanded || ui.cardOpen || ui.panelOpen || ui.talking }
+
+    /// With Liquid Glass, opening grows the sliver into one piece of glass that then divides
+    /// into the column's sections, and closing runs that backwards. Without it the column
+    /// scales out of the edge.
+    private var morphs: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            if isExpanded {
-                expanded
-                    .scaleEffect(look.pillScale, anchor: .trailing)
-                    .padding(.trailing, 7)
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.55, anchor: .trailing).combined(with: .opacity),
-                        removal: .scale(scale: 0.8, anchor: .trailing).combined(with: .opacity)))
-            } else {
-                collapsed.transition(.opacity)
+            Group {
+                if columnShown {
+                    expanded
+                        .scaleEffect(look.pillScale, anchor: .trailing)
+                        .padding(.trailing, 7)
+                        .transition(morphs
+                            ? .asymmetric(insertion: .identity,
+                                          removal: .scale(scale: 0.3, anchor: .trailing).combined(with: .opacity))
+                            : .asymmetric(
+                            insertion: .scale(scale: 0.55, anchor: .trailing).combined(with: .opacity),
+                            removal: .scale(scale: 0.8, anchor: .trailing).combined(with: .opacity)))
+                } else {
+                    collapsed.transition(morphs ? .identity : .opacity)
+                }
             }
+            .glassGroup(spacing: 6)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
+        .onAppear { columnShown = isExpanded; split = isExpanded }
+        .onChange(of: isExpanded) { open in morph(open) }
+    }
+
+    private func morph(_ open: Bool) {
+        nextStep?.cancel()
+        guard morphs else {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { columnShown = open; split = open }
+            return
+        }
+        // Each step waits for the one before it to mostly land.
+        func then(_ delay: Double, _ step: @escaping () -> Void) {
+            let work = DispatchWorkItem(block: step)
+            nextStep = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+        if open {
+            // The sliver swells into one piece of glass, which then divides into sections.
+            let wasShown = columnShown
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.8)) { columnShown = true }
+            then(wasShown ? 0 : 0.16) {
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.66)) { split = true }
+            }
+        } else {
+            // The sections flow back into one piece, which shrinks into the sliver.
+            let wasSplit = split
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) { split = false }
+            then(wasSplit ? 0.22 : 0) {
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) { columnShown = false }
+            }
+        }
     }
 
     private var sessions: [AgentSession] { Array(store.visibleSessions.prefix(10)) }
@@ -54,51 +105,97 @@ struct PillView: View {
         }
         .padding(.vertical, 7 + Self.flare)
         .frame(width: 10)
-        .background(EdgeTab(radius: 5, flare: Self.flare).fill(Color(hex: "#080808")))
-        .overlay(EdgeTab(radius: 5, flare: Self.flare).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        .modifier(CollapsedChrome(shape: EdgeTab(radius: 5, flare: Self.flare), id: "column", namespace: glass))
     }
 
     static let flare: CGFloat = 6
 
     // MARK: Expanded
 
+    /// The column's sections, top to bottom, with their heights (OverlayController.talkAnchor
+    /// mirrors these numbers).
+    private enum Section: CaseIterable { case inbox, agents, talk, more }
+    private static let gap: CGFloat = 7
+
+    private func height(_ section: Section) -> CGFloat {
+        switch section {
+        case .inbox, .more: return 32
+        case .agents:
+            let n = CGFloat(sessions.count)
+            return n == 0 ? 0 : n * 9 + (n - 1) * 7 + 20
+        case .talk: return 91
+        }
+    }
+
+    /// Before the column divides, every section sits at its middle, so together they read as a
+    /// single piece of glass; dividing slides each one out to its place.
+    private func gathered(_ section: Section) -> CGFloat {
+        guard !split else { return 0 }
+        let present = Section.allCases.filter { height($0) > 0 }
+        let total = present.map(height).reduce(0, +) + Self.gap * CGFloat(present.count - 1)
+        var top: CGFloat = 0
+        for s in present {
+            if s == section { return total / 2 - (top + height(s) / 2) }
+            top += height(s) + Self.gap
+        }
+        return 0
+    }
+
+    /// The glyphs inside a section appear as it divides off, and fade as it flows back.
+    private func emerging<V: View>(_ v: V) -> some View {
+        v.opacity(split ? 1 : 0)
+            .scaleEffect(split ? 1 : 0.6)
+            .blur(radius: split ? 0 : 2)
+    }
+
+    /// The first section takes over the sliver's glass; the others are pulled out of it.
+    private func glassID(_ section: Section) -> String {
+        let first: Section = sessions.isEmpty ? .inbox : .agents
+        return section == first ? "column" : "\(section)"
+    }
+
+    /// Gathered, only the piece that took over the sliver carries the dark smoke.
+    private func smokes(_ section: Section) -> Bool { split || glassID(section) == "column" }
+
     private var expanded: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: Self.gap) {
             // Inbox
             Button(action: onInbox) {
-                Image(systemName: "tray")
+                emerging(Image(systemName: "tray")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.white))
                     .frame(width: 32, height: 32)
-                    .pillChrome(Circle(), active: ui.cardOpen)
-                    .overlay(alignment: .topTrailing) { inboxBadge }
+                    .pillChrome(Circle(), active: ui.cardOpen, id: glassID(.inbox), in: glass, smoke: smokes(.inbox))
+                    .overlay(alignment: .topTrailing) { inboxBadge.opacity(split ? 1 : 0) }
             }
             .buttonStyle(PressScale())
             .focusable(false)
             .hoverTip(store.waitingCount > 0 ? "\(store.waitingCount) waiting · ⌃⌥Space" : "Inbox · ⌃⌥Space")
+            .offset(y: gathered(.inbox))
 
             // Agents
             if !sessions.isEmpty {
                 Button(action: onAgents) {
-                    VStack(spacing: 7) {
+                    emerging(VStack(spacing: 7) {
                         ForEach(sessions) { s in
                             StatusGlyph(status: shown(s), size: 9, heat: heat.heat[s.id]?.level ?? .none, pop: 1.8)
                         }
-                    }
+                    })
                     .padding(.vertical, 10)
                     .frame(width: 32)
-                    .pillChrome(Capsule(), active: ui.sidePanel == .agents)
+                    .pillChrome(Capsule(), active: ui.sidePanel == .agents, id: glassID(.agents), in: glass, smoke: smokes(.agents))
                     .contentShape(Capsule())
                 }
                 .buttonStyle(PressScale())
                 .focusable(false)
                 .hoverTip(agentsSummary)
+                .offset(y: gathered(.agents))
             }
 
             // Talk group
-            VStack(spacing: 1) {
+            emerging(VStack(spacing: 1) {
                 GroupButton(help: "Workspaces", action: onHome) {
-                    Mascot(style: .outline, size: 15, blinks: false)
+                    Mascot(size: 20)
                 }
                 GroupButton(help: ui.listening ? "Listening · ⌥⌥ sends" : "Talk · ⌥⌥", action: onVoice) {
                     if ui.listening {
@@ -110,23 +207,27 @@ struct PillView: View {
                 GroupButton(help: "Talk with a screenshot", action: onScreenshotVoice) {
                     Image(systemName: "camera").font(.system(size: 12.5, weight: .medium))
                 }
-            }
+            })
             .padding(.vertical, 5)
             .frame(width: 32)
-            .pillChrome(Capsule(), active: ui.talking)
+            .pillChrome(Capsule(), active: ui.talking, id: glassID(.talk), in: glass, smoke: smokes(.talk))
+            .offset(y: gathered(.talk))
 
             // More
             Button(action: onMore) {
-                Image(systemName: "ellipsis")
+                emerging(Image(systemName: "ellipsis")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.white))
                     .frame(width: 32, height: 32)
-                    .pillChrome(Circle(), active: ui.panelOpen && ui.sidePanel == .settings)
+                    .pillChrome(Circle(), active: ui.panelOpen && ui.sidePanel == .settings, id: glassID(.more), in: glass, smoke: smokes(.more))
             }
             .buttonStyle(PressScale())
             .focusable(false)
             .hoverTip("Settings")
+            .offset(y: gathered(.more))
         }
+        // Gathered, the sections overlap; let the clicks wait until they have divided.
+        .allowsHitTesting(split)
     }
 
     @ViewBuilder private var inboxBadge: some View {
@@ -146,6 +247,27 @@ struct PillView: View {
         if working > 0 { parts.append("\(working) working") }
         if waiting > 0 { parts.append("\(waiting) waiting") }
         return parts.isEmpty ? "\(sessions.count) agents" : parts.joined(separator: " · ")
+    }
+}
+
+/// The collapsed sliver: glass that shares its id with a piece of the open column, so opening
+/// the pill pulls the column out of it. Darker than the column, since it is only a few points wide.
+private struct CollapsedChrome<S: Shape>: ViewModifier {
+    var shape: S
+    var id: String
+    var namespace: Namespace.ID
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .background(shape.fill(Color.black.opacity(0.62)))
+                .glassEffect(.regular, in: shape)
+                .glassEffectID(id, in: namespace)
+        } else {
+            content
+                .background(shape.fill(Color(hex: "#080808")))
+                .overlay(shape.stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        }
     }
 }
 
