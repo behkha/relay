@@ -101,7 +101,7 @@ The live conversation rendered as Markdown: your prompts, Claude's replies, ever
 
 ### Talk
 
-Double-tap `Option` (or click the mic). A black bar opens level with the pill's mic and fills with your words as you speak; you can type or edit too. `⏎` (or another double-tap) sends, `⇧⏎` adds a line, `esc` discards. The message goes to the agent on the card, the agent you picked, or the one it's obviously meant for, resolved by name, project folder, or a Claude Haiku router as the fallback. The bar then tells you where it went (`✓ Sent to @claude-5 · ledger-db`) before it gets out of the way.
+Double-tap `Option` (or click the mic). A black bar opens level with the pill's mic and fills with your words as you speak; you can type or edit too. `⏎` (or another double-tap) sends, `⇧⏎` adds a line, `esc` discards. The `To` chip at the top of the bar shows which agent gets it; click it to pick another from the list. The message goes to the agent on the card or the one you picked. Otherwise Relay suggests the one it's obviously meant for, resolved by name, project folder, or a Claude Haiku router as the fallback, and sends nothing until you approve the suggestion with `⏎` (or pick another agent). The bar then tells you where it went (`✓ Sent to @claude-5 · ledger-db`) before it gets out of the way.
 
 ### Phone
 

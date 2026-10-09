@@ -5,7 +5,8 @@ import AVFoundation
 import Combine
 
 /// The quick bar: double-tap Option (or click the mic) and say or type what you need.
-/// It goes to the agent on the card, the agent you picked, or the one it is clearly meant for.
+/// It goes to the agent on the card or the agent you picked from the list. Otherwise Relay
+/// suggests the one it is clearly meant for and waits for you to approve (or pick another).
 /// ⏎ (or another double-tap) sends, ⇧⏎ adds a line, esc discards.
 final class VoiceController: NSObject, ObservableObject {
     @Published var open = false {
@@ -20,14 +21,19 @@ final class VoiceController: NSObject, ObservableObject {
     @Published var status = ""
     @Published var targetLabel: String?
     @Published var withScreenshot = false
+    /// The agent you chose (or the card's agent). Never re-routed.
+    @Published private(set) var targetSession: String?
+    /// The agent Relay picked for you; nothing is sent until you approve it (⏎ or Send).
+    @Published private(set) var proposed: String?
 
+    /// Agents the bar can send to, for the picker.
+    var candidates: [AgentSession] { store.visibleSessions }
     private let store: Store
     private let ui: UIState
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var target: InboxItem?
-    private var targetSession: String?
     private var screenshotPath: String?
     private var panel: FloatingPanel?
     private var host: SizeReportingHostingView<AnyView>?
@@ -79,6 +85,7 @@ final class VoiceController: NSObject, ObservableObject {
         self.target = target
         // The card's agent stays the target even if that card is answered elsewhere meanwhile.
         self.targetSession = session ?? target?.sessionId
+        proposed = nil
         barSession += 1
         sending = false
         sentTo = nil
@@ -128,6 +135,26 @@ final class VoiceController: NSObject, ObservableObject {
         self.task = nil
         self.request = nil
         status = ""
+    }
+
+    /// Picks the agent from the list. Replying to a card turns into a plain message
+    /// once you pick a different agent.
+    func choose(sessionId: String) {
+        guard let s = store.sessions[sessionId] else { return }
+        if target?.sessionId != sessionId { target = nil }
+        targetSession = sessionId
+        proposed = nil
+        targetLabel = s.displayName
+        if status.hasPrefix("Send to") || status.hasPrefix("No agent") || status.hasPrefix("That agent") { status = "" }
+    }
+
+    /// Back to letting Relay suggest the agent.
+    func chooseAutomatic() {
+        target = nil
+        targetSession = nil
+        proposed = nil
+        targetLabel = nil
+        if status.hasPrefix("Send to") { status = "" }
     }
 
     /// The field was edited by hand: dictation stops overwriting it.
@@ -199,6 +226,7 @@ final class VoiceController: NSObject, ObservableObject {
         barSession += 1
         target = nil
         targetSession = sessionId
+        proposed = nil
         targetLabel = nil
         text = ""
         status = ""
@@ -240,19 +268,35 @@ final class VoiceController: NSObject, ObservableObject {
             }
             return
         }
+        if let proposed {
+            // You approved Relay's pick. Routed (guessed) messages are plain messages;
+            // sendText refuses to answer prompts with them.
+            if store.sessions[proposed] != nil {
+                store.sendText(full, toSession: proposed)
+                finishSend(to: proposed)
+            } else {
+                self.proposed = nil
+                targetLabel = nil
+                status = "That agent is gone. Pick another one."
+                sending = false
+            }
+            return
+        }
         status = "Finding the right agent…"
         Router.pick(for: words, store: store) { [weak self] sessionId in
             guard let self, session == self.barSession else { return }   // discarded meanwhile
-            guard let sessionId, self.store.sessions[sessionId] != nil else {
+            self.sending = false
+            guard self.targetSession == nil else { self.status = ""; return }   // picked one from the list meanwhile
+            guard let sessionId, let s = self.store.sessions[sessionId] else {
                 self.status = "No agent to send this to. It's on your clipboard."
-                self.sending = false
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(full, forType: .string)
                 return
             }
-            // Routed (guessed) messages are plain messages; sendText refuses to answer prompts with them.
-            self.store.sendText(full, toSession: sessionId)
-            self.finishSend(to: sessionId)
+            // Nothing goes out until you approve the pick.
+            self.proposed = sessionId
+            self.targetLabel = s.displayName
+            self.status = "Send to @\(s.handle)? ⏎ sends, or pick another agent."
         }
     }
 
@@ -277,7 +321,7 @@ final class VoiceController: NSObject, ObservableObject {
     private func showBar() {
         if panel == nil {
             let p = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 110))
-            let h = SizeReportingHostingView(rootView: AnyView(QuickBar(voice: self)))
+            let h = SizeReportingHostingView(rootView: AnyView(QuickBar(voice: self, store: store)))
             h.onFittingSizeChange = { [weak self] in self?.layoutBar() }
             h.layerContentsPlacement = .right
             p.contentView = h
@@ -374,6 +418,7 @@ final class VoiceController: NSObject, ObservableObject {
 /// then says who got them.
 struct QuickBar: View {
     @ObservedObject var voice: VoiceController
+    @ObservedObject var store: Store
     @ObservedObject private var look = Appearance.shared
     @FocusState private var focused: Bool
 
@@ -405,6 +450,7 @@ struct QuickBar: View {
 
     private var inputRow: some View {
         VStack(alignment: .leading, spacing: 5) {
+            targetPicker
             HStack(alignment: .center, spacing: 10) {
                 TextField(placeholder,
                           // Only a real edit counts as typing: the field echoing dictated text back must not stop it.
@@ -435,7 +481,7 @@ struct QuickBar: View {
                 .help(voice.recording ? "Stop listening" : "Talk")
                 if !empty && !voice.recording {
                     Button { voice.send() } label: {
-                        Image(systemName: "arrow.up")
+                        Image(systemName: voice.proposed != nil ? "checkmark" : "arrow.up")
                             .font(look.font(11, .bold))
                             .foregroundStyle(.white)
                             .frame(width: 24, height: 24)
@@ -443,7 +489,7 @@ struct QuickBar: View {
                     }
                     .buttonStyle(PressScale())
                     .focusable(false)
-                    .help("Send  (⏎)")
+                    .help(voice.proposed != nil ? "Approve and send  (⏎)" : "Send  (⏎)")
                     .transition(.scale(scale: 0.5).combined(with: .opacity))
                 }
             }
@@ -453,6 +499,49 @@ struct QuickBar: View {
                 Text(voice.status).font(look.font(10.5)).foregroundStyle(Theme.textFaint).lineLimit(2)
             }
         }
+    }
+
+    /// "To @claude-3 · project ▾": which agent gets it. Pick another from the list at any time.
+    private var targetPicker: some View {
+        let chosen = (voice.targetSession ?? voice.proposed).flatMap { store.sessions[$0] }
+        let awaiting = voice.proposed != nil
+        return Menu {
+            Button("Let Relay pick") { voice.chooseAutomatic() }
+            if !voice.candidates.isEmpty { Divider() }
+            ForEach(voice.candidates) { s in
+                Button {
+                    voice.choose(sessionId: s.id)
+                } label: {
+                    let mark = s.id == (voice.targetSession ?? voice.proposed) ? "✓ " : ""
+                    Text("\(mark)@\(s.handle) · \(s.displayName) — \(s.status.label)")
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text("To").foregroundStyle(Theme.textFaint)
+                if let chosen {
+                    Circle().fill(chosen.status.color).frame(width: 6, height: 6)
+                    Text("@\(chosen.handle)").foregroundStyle(.white).fontWeight(.semibold)
+                    Text("· \(chosen.folderName)").foregroundStyle(Theme.textDim)
+                } else {
+                    Text("Relay picks").foregroundStyle(Theme.textDim)
+                }
+                Image(systemName: "chevron.down").font(look.font(8, .bold)).foregroundStyle(Theme.textFaint)
+            }
+            .font(look.font(11.5))
+            .lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(awaiting ? Theme.amber.opacity(0.18) : Color.white.opacity(0.07)))
+            .overlay(Capsule().strokeBorder(awaiting ? Theme.amber.opacity(0.6) : Color.clear, lineWidth: 0.75))
+            .contentShape(Capsule())
+        }
+        // .button + .plain keeps the custom label (borderlessButton flattens it to text).
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .focusable(false)
+        .help(awaiting ? "Relay picked this agent. Approve with ⏎, or pick another." : "Pick the agent that gets it")
     }
 
     private var placeholder: String {
