@@ -284,7 +284,3 @@ enum Shell {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
-
-/// SwiftUI's `@State` is a macro in this SDK and its plugin only ships with full Xcode.
-/// Using the property wrapper through an alias builds with the Command Line Tools alone.
-typealias ViewState<Value> = SwiftUI.State<Value>
