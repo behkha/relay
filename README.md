@@ -1,6 +1,7 @@
 <div align="center">
 
-<img src="docs/icon.png" alt="Relay icon" width="128" height="128">
+<!-- Re-record with scripts/record-mascot.sh idle. -->
+<img src="docs/mascot.webp" alt="Relay's mascot: a pastel cloud in a ring of liquid light, breathing, blinking and glancing around" width="160" height="160">
 
 # Relay
 
@@ -65,7 +66,7 @@ A thin black tab that flares into the right edge of the screen (or the left, or 
 
 A glyph pops when its agent changes state, so you see an agent finish out of the corner of your eye. Hover to expand the column of glossy black buttons: **inbox** (a dot means something is waiting), **agents**, **workspaces** (the mascot), **talk**, **talk with a screenshot**, and **settings** (`…`). While you talk the mic turns into live red level bars. Every button has a tooltip, because hidden UI without labels is a crime. Tooltips and hover work even while another app is in front; turn them off in **Look & sound** if you know the buttons by heart.
 
-When an agent asks something, **Agent needs you** slides out of the pill and the mascot (Relay's speech bubble with eyes) drops out from behind it, then both tuck back in as the card opens.
+When an agent asks something, **Agent needs you** slides out of the pill and the mascot (a pastel cloud whose mood follows your agents) drops out from behind it, then both tuck back in as the card opens.
 
 ### Right, left, or the notch
 
@@ -291,7 +292,9 @@ The script posts each event to Relay on `127.0.0.1` with a random token from `se
 | `PowerAssertion.swift` | Keeps the Mac awake while agents work |
 | `SelfTest.swift` | `Relay --self-test`, run by `scripts/selftest.sh` |
 | `CardView.swift`, `PillView.swift`, `Panels.swift` | The UI you actually look at |
-| `Mascot.swift` | The mascot, "Agent needs you", and the pill's chrome, level bars and status pops |
+| `Cloud.swift`, `Mood.swift` | The cloud mascot, and the mood it works out from your agents and your attention |
+| `Mascot.swift` | "Agent needs you", and the pill's chrome, level bars and status pops |
+| `MascotRecording.swift` | Records the mascot alone for the README (`scripts/record-mascot.sh`) |
 | `Dock.swift`, `NotchView.swift` | Where the pill docks (right, left, notch) and the notch island |
 | `Pointer.swift` | Hover and tooltips that work while another app is in front |
 | `Markdown.swift` | A Markdown renderer, because of course |
@@ -328,7 +331,7 @@ rm -rf /Applications/Relay.app ~/Library/Application\ Support/Relay
 - **Scope**: Claude Code only. Codex, OpenCode and Pi aren't supported, and neither are agents on other machines.
 - **AI helpers**: voice routing and next-step suggestions use Claude Haiku through your own Claude Code login, with no tools.
 - **Workspaces**: multiple Claude accounts, fully isolated. This is the reason Relay exists.
-- **Look**: the same black pill, card, talk bar and animations, but Relay keeps its own mascot (the speech bubble from its icon) instead of One's cloud.
+- **Look**: the same black pill, card, talk bar and animations, plus a cloud mascot of Relay's own whose mood follows your agents: asleep, busy, asking, impatient, happy.
 
 ---
 

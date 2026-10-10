@@ -87,6 +87,12 @@ final class MoodEngine: ObservableObject {
         update()
     }
 
+    /// Mascot recordings script the mood by hand; the engine is never attached to a store then.
+    func demoSet(_ mood: Mood, working: Int) {
+        if self.mood != mood { self.mood = mood }
+        if self.working != working { self.working = working }
+    }
+
     private func noticed() {
         // Back after a long time away: it's glad to see you.
         if mood == .lonely { happyUntil = Date().addingTimeInterval(3) }

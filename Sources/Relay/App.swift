@@ -12,6 +12,11 @@ enum RelayMain {
         if CommandLine.arguments.contains("--self-test") {
             exit(SelfTest.runAll() ? 0 : 1)
         }
+        // scripts/record-mascot.sh: just the mascot in a window of its own, nothing else starts.
+        if MascotRecording.isOn {
+            MascotRecording.main()
+            return
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
