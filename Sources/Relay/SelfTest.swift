@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import CryptoKit
 import IOKit.pwr_mgt
 
@@ -33,6 +34,7 @@ enum SelfTest {
         pushDispatch()
         remoteStart()
         keepAwake()
+        geometry()
         print("\(passed) passed, \(failures.count) failed")
         if !failures.isEmpty { print("Failed: " + failures.joined(separator: ", ")) }
         return failures.isEmpty
@@ -58,6 +60,94 @@ enum SelfTest {
 
     private static func harness() {
         check("harness: a true check passes", 1 + 1 == 2)
+    }
+
+    // MARK: - Geometry
+
+    /// Where the pill's pieces go on screen: the session viewer, the notch island's hit area,
+    /// and the room the edge pill leaves for its hover labels.
+    private static func geometry() {
+        // The session viewer stays on screen, beside its anchor where there's room.
+        let vf = NSRect(x: 0, y: 0, width: 1512, height: 944)
+        let size = NSSize(width: 520, height: 680)
+        func onScreen(_ o: NSPoint, in vf: NSRect) -> Bool {
+            o.x >= vf.minX + 10 && o.x + size.width <= vf.maxX - 10 && o.y >= vf.minY + 10 && o.y + size.height <= vf.maxY - 10
+        }
+        let island = NSRect(x: 627, y: 912, width: 258, height: 32)
+        let atNotch = SessionViewerController.origin(size: size, anchor: island, visible: vf, dock: .notch)
+        check("viewer: at the notch it sits left of the island", atNotch.x == island.minX - 10 - size.width && onScreen(atNotch, in: vf))
+        let small = NSRect(x: 0, y: 0, width: 900, height: 944)
+        let wide = NSRect(x: 150, y: 600, width: 610, height: 300)   // a card wider than the room either side
+        let squeezed = SessionViewerController.origin(size: size, anchor: wide, visible: small, dock: .notch)
+        check("viewer: no room left or right of the anchor, it overlaps it rather than leave the screen",
+              onScreen(squeezed, in: small) && squeezed.x == small.maxX - 10 - size.width)
+        let rightPill = NSRect(x: 1468, y: 300, width: 44, height: 380)
+        let onRight = SessionViewerController.origin(size: size, anchor: rightPill, visible: vf, dock: .right)
+        check("viewer: on the right edge it sits left of the pill", onRight.x == rightPill.minX - 10 - size.width && onScreen(onRight, in: vf))
+        let leftPill = NSRect(x: 0, y: 300, width: 44, height: 380)
+        let onLeft = SessionViewerController.origin(size: size, anchor: leftPill, visible: vf, dock: .left)
+        check("viewer: on the left edge it sits right of the pill", onLeft.x == leftPill.maxX + 10 && onScreen(onLeft, in: vf))
+        var everywhere = true
+        for dock in PillDock.allCases {
+            for ax in stride(from: CGFloat(-100), through: 1600, by: 50) {
+                for w in [CGFloat(44), 258, 380, 640] {
+                    let o = SessionViewerController.origin(size: size, anchor: NSRect(x: ax, y: 500, width: w, height: 300), visible: vf, dock: dock)
+                    if !onScreen(o, in: vf) { everywhere = false }
+                }
+            }
+            if !onScreen(SessionViewerController.origin(size: size, anchor: nil, visible: vf, dock: dock), in: vf) { everywhere = false }
+        }
+        check("viewer: on screen wherever the anchor is, for every dock", everywhere)
+        let narrow = NSRect(x: 100, y: 0, width: 400, height: 944)
+        check("viewer: on a screen narrower than it, its left edge stays on screen",
+              SessionViewerController.origin(size: size, anchor: island, visible: narrow, dock: .notch).x == narrow.minX + 10)
+
+        // The collapsed island takes the pointer over its body only: the notch and the two wings.
+        let geo = NotchGeometry()
+        geo.notchWidth = 185
+        geo.height = 32
+        let top: CGFloat = 982, mid: CGFloat = 756
+        let shape = geo.shape(.collapsed, textScale: 1, midX: mid, top: top)
+        let hit = geo.hitRect(.collapsed, textScale: 1, midX: mid, top: top)
+        check("island: collapsed, the hit area leaves out the flares",
+              hit.width == shape.width - 2 * NotchGeometry.ear && hit.midX == mid && hit.maxY == top && shape.contains(hit))
+        check("island: collapsed, the hit area is the notch and two wings, no wider than 80 beyond the notch",
+              hit.width == geo.notchWidth + 2 * geo.wing && hit.width - geo.notchWidth <= 80)
+        let fourAbreast: CGFloat = 4 * 5.5 + 3 * 2.5, mascot = min(geo.collapsedHeight - 12, 22)
+        check("island: a wing still fits the mascot and four dots abreast", geo.wing >= fourAbreast + 4 && geo.wing >= mascot + 8)
+        let dash = geo.hitRect(.dashboard, textScale: 1.25, midX: mid, top: top)
+        check("island: open, the hit area takes in the whole dashboard",
+              dash.contains(geo.shape(.dashboard, textScale: 1.25, midX: mid, top: top)))
+        geo.attachedWidth = geo.minBarWidth + 100
+        check("island: with a panel hanging, the hit area is the bar as wide as the panel",
+              geo.hitRect(.attached, textScale: 1, midX: mid, top: top).width == geo.attachedWidth + 2 * NotchGeometry.ear)
+
+        // On an edge, the hover labels fit beside the buttons inside the pill's window.
+        let labels = ["Inbox · ⌃⌥Space", PillView.inboxTip(waiting: 999),
+                      PillView.agentsTip(hot: nil, working: 10, waiting: 10, running: 20),
+                      PillView.agentsTip(hot: nil, working: 0, waiting: 0, running: 10),
+                      "Workspaces & settings", "Talk to an agent · ⌥⌥", "Listening · ⌥⌥ sends",
+                      "Talk with a screenshot", "Settings"]
+        var fits = true, whole = true
+        for k in [0.8, 1.0, 1.3] as [CGFloat] {
+            for ts in [0.9, 1.0, 1.25] {
+                let window = OverlayController.expandedWidth(pillScale: k, textScale: ts)
+                for label in labels {
+                    let text = HoverTip.textWidth(label, textScale: ts)
+                    let measured = (label as NSString).size(withAttributes: [.font: HoverTip.font(textScale: ts)]).width
+                    // Not cut short: as wide as SwiftUI draws it (whole points, rounded up) and more.
+                    if text < ceil(measured) + 1 || text >= HoverTip.maxTextWidth * CGFloat(ts) { whole = false }
+                    // The label's far end: 7 of padding, the button's 1 inset, the gap, then the label.
+                    if (8 + HoverTip.gap) * k + text + 2 * HoverTip.padding > window - 2 { fits = false }
+                }
+            }
+        }
+        check("pill: every fixed hover label shows whole, at every text size", whole)
+        check("pill: every hover label fits inside the open pill's window, at every pill and text size", fits)
+        let hot = PillView.agentsTip(hot: "🔥 a-very-long-agent-name-from-a-deep-folder · 312% CPU", working: 12, waiting: 9, running: 30)
+        check("pill: a label too long for the room is cut short to fit",
+              HoverTip.textWidth(hot, textScale: 1.25) == HoverTip.maxTextWidth * 1.25)
+        check("pill: the open pill's window is never narrower than before", OverlayController.expandedWidth(pillScale: 0.8, textScale: 0.9) >= 200)
     }
 
     // MARK: - Inbox

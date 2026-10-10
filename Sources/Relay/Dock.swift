@@ -42,8 +42,9 @@ final class NotchGeometry: ObservableObject {
     /// The concave flare where the island's top meets the bezel, on each side.
     static let ear: CGFloat = 7
 
-    /// Room on each side of the notch for the mascot (left) and the agents' dots (right).
-    var wing: CGFloat { max(height + 12, 42) * scale }
+    /// Room on each side of the notch for the mascot (left) and the agents' dots (right): just
+    /// enough for them, since the collapsed island sits over the menu bar and takes its clicks.
+    var wing: CGFloat { max(height + 4, 36) * scale }
     /// Never shorter than the notch it hugs; taller when the pill is bigger than normal.
     var collapsedHeight: CGFloat { height * max(1, scale) }
     var collapsedWidth: CGFloat { notchWidth > 0 ? notchWidth + 2 * wing : 2 * wing + 8 * scale }
@@ -69,6 +70,26 @@ final class NotchGeometry: ObservableObject {
         case .collapsed: return CGSize(width: collapsedWidth, height: collapsedHeight)
         case .dashboard: return CGSize(width: dashboardWidth(textScale), height: dashboardHeight(textScale))
         case .attached: return CGSize(width: barWidth, height: barHeight)
+        }
+    }
+
+    /// The island's black shape in a state, flares included, for a notch centred on `midX` at
+    /// the top of the screen (`top`), in screen coordinates.
+    func shape(_ mode: NotchIsland.Mode, textScale: Double, midX: CGFloat, top: CGFloat) -> CGRect {
+        let size = size(mode, textScale: textScale)
+        let width = size.width + 2 * Self.ear
+        return CGRect(x: midX - width / 2, y: top - size.height, width: width, height: size.height)
+    }
+
+    /// The part of the island that takes the pointer (and its clicks) in a state. Collapsed, only
+    /// the island's body: not its flares, which are mostly menu bar. Open, a little more around
+    /// the dashboard, so its edge isn't a hair trigger.
+    func hitRect(_ mode: NotchIsland.Mode, textScale: Double, midX: CGFloat, top: CGFloat) -> CGRect {
+        let shape = shape(mode, textScale: textScale, midX: midX, top: top)
+        switch mode {
+        case .collapsed: return shape.insetBy(dx: Self.ear, dy: 0)
+        case .dashboard: return shape.insetBy(dx: -6, dy: -8)
+        case .attached: return shape
         }
     }
 

@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         overlay.onVoiceReply = { [weak self] item in self?.voice.start(target: item, screenshot: false) }
         voice.anchor = { [weak self] in self?.overlay.talkAnchor }
+        voice.beforeScreenshot = { [weak self] in self?.overlay.prepareForScreenshot() }
         overlay.onHome = { [weak self] in self?.main.show() }
         overlay.phoneOn = { [weak self] in (self?.remote.enabled ?? false) || (self?.access.enabled ?? false) }
         overlay.onTalkTo = { [weak self] sessionId in self?.voice.start(sessionId: sessionId) }

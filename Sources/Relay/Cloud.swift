@@ -14,17 +14,20 @@ struct Mascot: View {
     var glance: CGFloat = 0
     var blinks = true
     var followsCursor = true
+    /// Breathes and swirls all the time. When false it holds still (blinks aside) and only stirs
+    /// for a moment when its mood changes: for a cloud that is always on screen.
+    var lively = true
     @ObservedObject private var engine = MoodEngine.shared
 
     var body: some View {
         if followsCursor {
             CursorGaze { gaze, near, play in
                 CloudFace(size: size, gaze: gaze, near: near, mood: feeling(play, near: near),
-                          working: engine.working, blinks: blinks)
+                          working: engine.working, blinks: blinks, lively: lively)
             }
         } else {
             CloudFace(size: size, gaze: CGPoint(x: glance, y: 0), near: 0, mood: engine.mood,
-                      working: engine.working, blinks: blinks)
+                      working: engine.working, blinks: blinks, lively: lively)
         }
     }
 
@@ -195,11 +198,16 @@ private struct CloudFace: View {
     var mood: Mood
     var working: Int
     var blinks: Bool
+    var lively = true
     @ViewState private var blink = false
     /// Its window is hidden or covered: no point drawing frames nobody sees.
     @ViewState private var hidden = false
+    /// A still cloud moving for a moment after its mood changed.
+    @ViewState private var stirring = false
+    @ViewState private var settle: DispatchWorkItem?
 
     private var e: Expression { Expression(mood, working: working) }
+    private var paused: Bool { hidden || (!lively && !stirring) }
 
     var body: some View {
         let e = self.e
@@ -209,14 +217,15 @@ private struct CloudFace: View {
         }
         .frame(width: size, height: size)
         // The ring and the extras spill past the cloud without taking up room.
-        .background(FluidRing(size: size, e: e, gaze: gaze, paused: hidden))
-        .overlay(Marks(size: size, marks: e.marks, paused: hidden))
-        .modifier(Wiggle(size: size, e: e, paused: hidden))
+        .background(FluidRing(size: size, e: e, gaze: gaze, paused: paused))
+        .overlay(Marks(size: size, marks: e.marks, paused: paused))
+        .modifier(Wiggle(size: size, e: e, paused: paused))
         .scaleEffect(e.scale)
         .animation(.spring(response: 0.45, dampingFraction: 0.55), value: mood)
         .animation(.spring(response: 0.5, dampingFraction: 0.78), value: gaze)
         .animation(.spring(response: 0.5, dampingFraction: 0.72), value: near)
         .background(VisibilityProbe(hidden: $hidden))
+        .onChange(of: mood) { _ in stir() }
         .task {
             guard blinks else { return }
             while !Task.isCancelled {
@@ -225,6 +234,16 @@ private struct CloudFace: View {
                 if Double.random(in: 0...1) < 0.2 { await blinkOnce() }   // now and then, a double blink
             }
         }
+    }
+
+    /// A still cloud shows off its new mood for a few seconds, then holds still again.
+    private func stir() {
+        guard !lively else { return }
+        settle?.cancel()
+        stirring = true
+        let work = DispatchWorkItem { stirring = false; settle = nil }
+        settle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
     @MainActor private func blinkOnce() async {

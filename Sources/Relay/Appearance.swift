@@ -218,10 +218,29 @@ struct HoverTip: ViewModifier {
 
     private var offset: CGSize {
         switch look.dock {
-        case .right: return CGSize(width: -44 * look.pillScale, height: 0)
-        case .left: return CGSize(width: 44 * look.pillScale, height: 0)
+        case .right: return CGSize(width: -Self.gap * look.pillScale, height: 0)
+        case .left: return CGSize(width: Self.gap * look.pillScale, height: 0)
         case .notch: return CGSize(width: 0, height: 28)
         }
+    }
+
+    /// From the button's outer edge to the label's near end, at pill size 1.
+    static let gap: CGFloat = 44
+    /// The widest a label's text gets at text size 1 (it grows with the text size). The pill's
+    /// window is sized to fit it (OverlayController.expandedWidth); a longer label, like a hot
+    /// agent's name, is cut short with "…" rather than by the window's edge.
+    static let maxTextWidth: CGFloat = 176
+    static let padding: CGFloat = 8
+
+    static func font(textScale: Double) -> NSFont {
+        .systemFont(ofSize: 11 * CGFloat(textScale), weight: .medium)
+    }
+
+    /// The width of a label's text: as measured (with a point to spare: SwiftUI rounds up), but
+    /// no wider than there is room for.
+    static func textWidth(_ text: String, textScale: Double) -> CGFloat {
+        let measured = (text as NSString).size(withAttributes: [.font: font(textScale: textScale)]).width
+        return min(ceil(measured) + 2, maxTextWidth * CGFloat(textScale))
     }
 
     func body(content: Content) -> some View {
@@ -232,8 +251,11 @@ struct HoverTip: ViewModifier {
                     Text(text)
                         .font(look.font(11, .medium))
                         .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: Self.textWidth(text, textScale: look.textScale))
                         .fixedSize()
-                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .padding(.horizontal, Self.padding).padding(.vertical, 4)
                         .background(Capsule().fill(Color.black.opacity(0.85)))
                         .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
                         .offset(offset)
