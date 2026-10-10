@@ -12,7 +12,7 @@ so you can stop `⌘-Tab`-ing through 14 terminal tabs like it's 1997.
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white)
 ![Swift 5.9](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)
-![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen)
+![Third-party dependencies: 0](https://img.shields.io/badge/third--party_dependencies-0-brightgreen)
 ![Lines of Swift: ~13k](https://img.shields.io/badge/lines_of_Swift-~13k-blue)
 ![Electron: no](https://img.shields.io/badge/Electron-nope-lightgrey)
 
@@ -37,7 +37,7 @@ Every question, permission prompt and finished task from every agent lands in **
 It started as a re-creation of [One](https://getone.one) and then grew one feature that I needed and nobody shipped: **workspaces**, so several Claude accounts (different Gmail logins) run side by side and never cross the streams.
 
 > [!NOTE]
-> Relay is pure Swift + SwiftUI + AppKit. No Electron, no Node runtime, no Homebrew tap, no package manifest with 400 transitive dependencies. `Package.swift` declares exactly one target and zero dependencies. The HTTP server is hand-rolled on top of `Network.framework`'s `NWListener`, because pulling in a web framework to parse three headers felt wrong.
+> Relay is pure Swift + SwiftUI + AppKit. No Electron, no Node runtime, no Homebrew tap, no package manifest with 400 transitive dependencies. `Package.swift` declares exactly one target and one dependency: [NimbiKit](https://github.com/behkha/nimbi-kit), the shared cloud and design system behind every nimbi app, which itself has zero dependencies. The HTTP server is hand-rolled on top of `Network.framework`'s `NWListener`, because pulling in a web framework to parse three headers felt wrong.
 
 ## Table of contents
 
@@ -336,6 +336,6 @@ rm -rf /Applications/Relay.app ~/Library/Application\ Support/Relay
 ---
 
 <div align="center">
-<sub>Built in Swift, zero dependencies, for people who run more agents than they have monitors.<br>
+<sub>Built in Swift, zero third-party dependencies, for people who run more agents than they have monitors.<br>
 <code>exit 0</code></sub>
 </div>
