@@ -31,7 +31,11 @@ final class FloatingPanel: NSPanel {
 final class OverlayController: NSObject {
     let store: Store
     let ui: UIState
-    private let pill: FloatingPanel
+    /// Replaced on leaving the notch (see replacePill), so always read through `self`.
+    private var pill: FloatingPanel
+    /// The island has set `ignoresMouseEvents` on the pill's window. Once that has been set at
+    /// all, AppKit no longer lets clicks through the window's transparent parts by itself.
+    private var pillHitTestingSet = false
     private let card: FloatingPanel
     private var cardHost: SizeReportingHostingView<AnyView>!
     private var bag = Set<AnyCancellable>()
@@ -84,8 +88,7 @@ final class OverlayController: NSObject {
     init(store: Store, ui: UIState) {
         self.store = store
         self.ui = ui
-        pill = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: Self.collapsedWidth, height: Self.pillHeight))
-        pill.allowsKey = false
+        pill = Self.makePill()
         card = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 348, height: 300))
         side = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300))
         sub = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300))
@@ -224,11 +227,33 @@ final class OverlayController: NSObject {
         closeSide()
         hideToast()
         ui.pillExpanded = false
+        let replaced = dock != .notch && pillHitTestingSet
+        if replaced { replacePill() }
         applyDock()
         shrinkWork?.cancel()
         shrinkWork = nil
         if let rect = pillRect(expanded: false) { pill.setFrame(rect, display: true) }
+        if replaced && isPillVisible { pill.orderFrontRegardless() }
         updateIslandHitTesting()
+    }
+
+    private static func makePill() -> FloatingPanel {
+        let p = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: collapsedWidth, height: pillHeight))
+        p.allowsKey = false
+        return p
+    }
+
+    /// On an edge the open pill's window is mostly transparent (room for the hover labels), and
+    /// clicks there must reach the app underneath, which AppKit does by itself only for a window
+    /// whose `ignoresMouseEvents` was never set. The island sets it, and setting it back to false
+    /// makes the whole window take clicks, so leaving the notch moves the pill into a new window.
+    private func replacePill() {
+        let old = pill
+        old.contentView = nil
+        old.orderOut(nil)
+        pill = Self.makePill()
+        pill.contentView = pillHost
+        pillHitTestingSet = false
     }
 
     /// Window levels and resize pinning for where the pill lives.
@@ -420,13 +445,16 @@ final class OverlayController: NSObject {
     /// moves over the island's view.
     private func updateIslandHitTesting() {
         guard dock == .notch else {
-            if pill.ignoresMouseEvents { pill.ignoresMouseEvents = false }
+            // Never set on an edge (see replacePill).
             dwellWork?.cancel()
             dwellWork = nil
             return
         }
         let inside = NSMouseInRect(NSEvent.mouseLocation, islandHitRect, false)
-        if pill.ignoresMouseEvents == inside { pill.ignoresMouseEvents = !inside }
+        if !pillHitTestingSet || pill.ignoresMouseEvents == inside {
+            pill.ignoresMouseEvents = !inside
+            pillHitTestingSet = true
+        }
         pillHost.refreshPointer()
         guard inside, !ui.pillExpanded else {
             // Left before the dwell was up (or it's open already): start over next time.
