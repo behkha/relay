@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import NimbiKit
 
 /// The inbox card: one agent's question, permission prompt or finished turn at a time.
 /// Every action runs after a short "esc to undo" countdown, like One.
@@ -963,32 +964,6 @@ struct IconButton: View {
         .buttonStyle(.plain)
                 .focusable(false)
         .onHover { hover = $0 }
-    }
-}
-
-struct PillButtonStyle: ButtonStyle {
-    var prominent = false
-    var light = false
-    var destructive = false
-    /// The label ends with a key hint, which sits closer to the edge.
-    var hint = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        let look = Appearance.shared
-        return configuration.label
-            .font(look.font(11.5, .semibold))
-            .lineLimit(1)
-            .fixedSize()
-            .foregroundStyle(light ? Color.black.opacity(0.88) : (destructive ? Theme.red : .white))
-            .padding(.leading, 10).padding(.trailing, hint ? 4 : 10).padding(.vertical, 3)
-            .frame(minHeight: 25)
-            .background(
-                Capsule().fill(light ? Color.white.opacity(configuration.isPressed ? 0.7 : 0.94)
-                               : prominent ? Theme.blue.opacity(configuration.isPressed ? 0.7 : 1)
-                               : destructive ? Theme.red.opacity(configuration.isPressed ? 0.22 : 0.12)
-                               : Color.white.opacity(configuration.isPressed ? 0.16 : 0.09))
-            )
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
     }
 }
 

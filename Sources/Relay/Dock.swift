@@ -1,30 +1,9 @@
 import SwiftUI
 import AppKit
+import NimbiKit
 
-/// Where the pill lives on screen.
-enum PillDock: String, CaseIterable, Identifiable {
-    case right, left, notch
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .right: return "Right"
-        case .left: return "Left"
-        case .notch: return "Notch"
-        }
-    }
-
-    /// The point panels grow out of: the screen edge the pill sits on, or the top at the notch.
-    var growAnchor: UnitPoint {
-        switch self {
-        case .right: return .trailing
-        case .left: return .leading
-        case .notch: return .top
-        }
-    }
-
-    var isEdge: Bool { self != .notch }
-}
+/// Where the pill lives on screen (NimbiKit's `NimbiDock`).
+typealias PillDock = NimbiDock
 
 /// The notch island's measurements, taken from the screen it sits on. Shared by the island
 /// view (which draws it) and the overlay (which sizes the window and hangs panels from it).
@@ -149,37 +128,6 @@ struct IslandShape: Shape {
         p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY), control: CGPoint(x: right, y: rect.minY))
         p.closeSubpath()
         return p
-    }
-}
-
-/// A panel hanging from the island: square on top (where it meets the island), rounded below.
-struct IslandBody: Shape {
-    var radius: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        let r = min(radius, rect.width / 2, rect.height / 2)
-        var p = Path()
-        p.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
-        p.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY), tangent2End: CGPoint(x: rect.maxX - r, y: rect.maxY), radius: r)
-        p.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
-        p.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY), tangent2End: CGPoint(x: rect.minX, y: rect.maxY - r), radius: r)
-        p.closeSubpath()
-        return p
-    }
-}
-
-private struct HangsFromPillKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
-extension EnvironmentValues {
-    /// The panel opens out of the pill (the card, the agents list, the settings menu). At the
-    /// notch those hang from the island and drop their top corners.
-    var hangsFromPill: Bool {
-        get { self[HangsFromPillKey.self] }
-        set { self[HangsFromPillKey.self] = newValue }
     }
 }
 

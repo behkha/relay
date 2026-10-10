@@ -1,40 +1,6 @@
 import SwiftUI
 import Combine
-
-/// How the cloud feels. The engine works most of these out from the agents and from how much
-/// attention you have been paying; the last two come from the cursor playing with it.
-enum Mood: Equatable {
-    /// No agents at all.
-    case asleep
-    /// Agents around, none of them working, nothing asked.
-    case relaxed
-    /// Agents working; the more of them, the livelier it gets.
-    case busy
-    /// An agent just asked something.
-    case asking
-    /// A question has been waiting a while.
-    case impatient
-    /// A question has waited far too long, or several are piling up.
-    case angry
-    /// You just answered, an agent finished, or you came back after a long time away.
-    case happy
-    /// Finished work is piling up and nobody has looked in a long while.
-    case lonely
-    /// The Mac, or one of the agents, is running hot.
-    case overheated
-    /// The cursor is resting on it.
-    case giggly
-    /// The cursor has been shaken around it.
-    case dizzy
-
-    /// Moods the cursor is allowed to play over; anything that needs you comes first.
-    var isPlayful: Bool {
-        switch self {
-        case .asleep, .relaxed, .busy, .happy, .lonely: return true
-        default: return false
-        }
-    }
-}
+import NimbiKit
 
 /// Works out the cloud's mood from the store, the UI and the Mac's heat, and nudges you with
 /// the "Agent needs you" toast when a question has been left waiting too long.

@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import ScreenCaptureKit
 import AVFoundation
+import NimbiKit
 
 /// Scripted demo for the README GIF: `RELAY_DEMO=1 RELAY_DEMO_OUT=/path/demo.mov .build/release/Relay`.
 ///

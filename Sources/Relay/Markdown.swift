@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import NimbiKit
 
 /// Block-level Markdown for agent messages: headings, paragraphs, bullet/numbered/task lists (nested),
 /// fenced code, block quotes, tables and rules. Inline styles (bold, italic, `code`, links, strikethrough)

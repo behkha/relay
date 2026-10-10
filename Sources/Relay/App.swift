@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import UserNotifications
 import Carbon.HIToolbox
+import NimbiKit
 
 @main
 enum RelayMain {
@@ -53,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             store.ensureHooks()
             store.refreshAllAccounts()
         }
+        // Hands the saved look to NimbiKit before any of its components draw.
+        _ = Appearance.shared
 
         voice = VoiceController(store: store, ui: ui)
         remote = RemoteServer(store: store)

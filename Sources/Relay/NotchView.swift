@@ -1,4 +1,5 @@
 import SwiftUI
+import NimbiKit
 
 /// The pill when it lives at the notch: a black island that grows out of the camera housing.
 ///

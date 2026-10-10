@@ -4,6 +4,7 @@ import ScreenCaptureKit
 import CoreMedia
 import ImageIO
 import UniformTypeIdentifiers
+import NimbiKit
 
 /// Records the mascot alone for the README: `RELAY_MASCOT=<scene> RELAY_MASCOT_OUT=/path/frames .build/release/Relay`.
 ///

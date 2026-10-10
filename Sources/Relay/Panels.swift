@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import NimbiKit
 
 // MARK: - Agents list
 

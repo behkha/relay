@@ -1,40 +1,39 @@
 import SwiftUI
 import AppKit
 import Combine
+import NimbiKit
 
 /// Look & sound preferences (theme, pill and text size, sounds), observable by every panel.
+/// NimbiKit's components read the look from `NimbiAppearance`, which this keeps in step.
 final class Appearance: ObservableObject {
     static let shared = Appearance()
 
-    enum ThemeChoice: String, CaseIterable, Identifiable {
-        case dark = "Dark", black = "Black"
-        var id: String { rawValue }
-    }
+    typealias ThemeChoice = NimbiTheme
 
     @Published var theme: ThemeChoice {
-        didSet { UserDefaults.standard.set(theme.rawValue, forKey: "theme") }
+        didSet { UserDefaults.standard.set(theme.rawValue, forKey: "theme"); bridge() }
     }
     /// 0.8 … 1.3
     @Published var pillScale: Double {
-        didSet { UserDefaults.standard.set(pillScale, forKey: "pillScale") }
+        didSet { UserDefaults.standard.set(pillScale, forKey: "pillScale"); bridge() }
     }
     /// 0.9 … 1.25
     @Published var textScale: Double {
-        didSet { UserDefaults.standard.set(textScale, forKey: "textScale") }
+        didSet { UserDefaults.standard.set(textScale, forKey: "textScale"); bridge() }
     }
     @Published var soundName: String {
         didSet { UserDefaults.standard.set(soundName, forKey: "soundName") }
     }
     /// Where the pill lives: the right or left edge of the screen, or around the notch.
     @Published var dock: PillDock {
-        didSet { UserDefaults.standard.set(dock.rawValue, forKey: "pillDock") }
+        didSet { UserDefaults.standard.set(dock.rawValue, forKey: "pillDock"); bridge() }
     }
     /// At the notch, the card and side panels are at least as wide as the island's button bar,
     /// so the two read as one piece. Set by the overlay from the screen's notch.
     @Published var notchPanelMinWidth: CGFloat = 0
     /// Labels that say what each of the pill's buttons does, on hover.
     @Published var showTooltips: Bool {
-        didSet { UserDefaults.standard.set(showTooltips, forKey: "showTooltips") }
+        didSet { UserDefaults.standard.set(showTooltips, forKey: "showTooltips"); bridge() }
     }
 
     static let sounds = ["Tink", "Pop", "Glass", "Ping", "Purr", "Submarine", "Funk", "Bottle"]
@@ -47,6 +46,17 @@ final class Appearance: ObservableObject {
         soundName = d.string(forKey: "soundName") ?? "Tink"
         dock = PillDock(rawValue: d.string(forKey: "pillDock") ?? "") ?? .right
         showTooltips = d.object(forKey: "showTooltips") as? Bool ?? true
+        bridge()
+    }
+
+    /// Hands the look to NimbiKit, so its components match the rest of Relay.
+    private func bridge() {
+        let kit = NimbiAppearance.shared
+        if kit.theme != theme { kit.theme = theme }
+        if kit.textScale != textScale { kit.textScale = textScale }
+        if kit.pillScale != pillScale { kit.pillScale = pillScale }
+        if kit.dock != dock { kit.dock = dock }
+        if kit.showTooltips != showTooltips { kit.showTooltips = showTooltips }
     }
 
     /// Width of a panel that hangs from the pill (card, agents list, settings menu).
@@ -62,40 +72,8 @@ final class Appearance: ObservableObject {
     }
 }
 
-/// The panel behind the card, the agents list and the menus: solid near-black with a faint rim
-/// (One's look). "Black" goes all the way to black.
-struct Glass: View {
-    var cornerRadius: CGFloat = 18
-    @ObservedObject private var look = Appearance.shared
-    @Environment(\.hangsFromPill) private var hangsFromPill
-
-    var body: some View {
-        if look.dock == .notch && hangsFromPill {
-            // Hanging from the notch island: pure black with a flat top, so the two read as one piece.
-            IslandBody(radius: cornerRadius + 4).fill(Color.black)
-        } else {
-            rounded
-        }
-    }
-
-    private var rounded: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(look.theme == .black ? Color(hex: "#090909") : Theme.card)
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.09), lineWidth: 0.75)
-            )
-    }
-}
-
-extension View {
-    /// The soft shadow under every floating panel, with room around it so the window never clips it.
-    func floatingPanelShadow() -> some View {
-        shadow(color: .black.opacity(0.32), radius: 14, y: 7)
-            .padding(16)
-            .padding(.bottom, 8)
-    }
-}
+/// The panel behind the card, the agents list and the menus (NimbiKit's `PanelBackground`).
+typealias Glass = PanelBackground
 
 struct VisualEffect: NSViewRepresentable {
     var material: NSVisualEffectView.Material
@@ -111,24 +89,6 @@ struct VisualEffect: NSViewRepresentable {
 
     func updateNSView(_ v: NSVisualEffectView, context: Context) {
         v.material = material
-    }
-}
-
-/// Small rounded key hint like the ones One shows next to its buttons ("esc", "J", "E").
-struct KeyHint: View {
-    var key: String
-    /// Drawn on a light button (dark text and chip).
-    var onLight = false
-    @ObservedObject private var look = Appearance.shared
-
-    var body: some View {
-        Text(key)
-            .font(look.font(9.5, .semibold))
-            .foregroundStyle(onLight ? Color.black.opacity(0.5) : Color.white.opacity(0.6))
-            .padding(.horizontal, key.count > 1 ? 5 : 0)
-            .frame(minWidth: 17, minHeight: 17)
-            .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(onLight ? Color.black.opacity(0.09) : Color.white.opacity(0.11)))
     }
 }
 
@@ -151,147 +111,9 @@ struct AgentMark: View {
     }
 }
 
-/// Spinner arc / dot used for agents in the pill and lists. Pops when the agent stops working.
-struct StatusGlyph: View {
-    var status: AgentStatus
-    var size: CGFloat = 9
-    var heat: HeatLevel = .none
-    /// How far it swells when it changes (0 turns the pop off).
-    var pop: CGFloat = 1.6
-
-    var body: some View {
-        GlyphFace(status: status, size: size, heat: heat)
-            .id("\(status == .working)-\(heat == .hot)")   // fresh view (and animation) every time work starts again
-            .popOnChange(of: status, strength: pop) { $0 != .working && pop > 0 }
-    }
-}
-
-private struct GlyphFace: View {
-    var status: AgentStatus
-    var size: CGFloat
-    var heat: HeatLevel
-    @ViewState private var spin = false
-
-    var body: some View {
-        Group {
-            if heat == .hot {
-                // A flickering ember: the agent heating the Mac.
-                TimelineView(.animation(minimumInterval: 1 / 20)) { ctx in
-                    let t = ctx.date.timeIntervalSinceReferenceDate
-                    let flicker = 0.85 + 0.15 * sin(t * 13) * sin(t * 7 + 1)
-                    Circle()
-                        .fill(RadialGradient(colors: [Fire.core, Fire.yellow, Fire.orange, Fire.red],
-                                             center: UnitPoint(x: 0.5, y: 0.7), startRadius: 0, endRadius: size * 0.6))
-                        .scaleEffect(flicker)
-                        .shadow(color: Fire.orange.opacity(0.9), radius: size * 0.5 * flicker)
-                }
-            } else if status == .working {
-                Circle()
-                    .trim(from: 0, to: 0.66)
-                    .stroke(Theme.blue, style: StrokeStyle(lineWidth: max(1.6, size * 0.24), lineCap: .round))
-                    .rotationEffect(.degrees(spin ? 360 : 0))
-                    .onAppear {
-                        withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spin = true }
-                    }
-            } else {
-                Circle().fill(status.color)
-            }
-        }
-        .frame(width: size, height: size)
-    }
-}
-
-/// Floating label shown beside a pill button while hovering it: toward the middle of the screen
-/// (left of the button on the right edge, right of it on the left edge, below it at the notch).
-struct HoverTip: ViewModifier {
-    var text: String
-    @ViewState private var hover = false
-    @ObservedObject private var look = Appearance.shared
-
-    private var alignment: Alignment {
-        switch look.dock {
-        case .right: return .trailing
-        case .left: return .leading
-        case .notch: return .bottom
-        }
-    }
-
-    private var offset: CGSize {
-        switch look.dock {
-        case .right: return CGSize(width: -Self.gap * look.pillScale, height: 0)
-        case .left: return CGSize(width: Self.gap * look.pillScale, height: 0)
-        case .notch: return CGSize(width: 0, height: 28)
-        }
-    }
-
-    /// From the button's outer edge to the label's near end, at pill size 1.
-    static let gap: CGFloat = 44
-    /// The widest a label's text gets at text size 1 (it grows with the text size). The pill's
-    /// window is sized to fit it (OverlayController.expandedWidth); a longer label, like a hot
-    /// agent's name, is cut short with "…" rather than by the window's edge.
-    static let maxTextWidth: CGFloat = 176
-    static let padding: CGFloat = 8
-
-    static func font(textScale: Double) -> NSFont {
-        .systemFont(ofSize: 11 * CGFloat(textScale), weight: .medium)
-    }
-
-    /// The width of a label's text: as measured (with a point to spare: SwiftUI rounds up), but
-    /// no wider than there is room for.
-    static func textWidth(_ text: String, textScale: Double) -> CGFloat {
-        let measured = (text as NSString).size(withAttributes: [.font: font(textScale: textScale)]).width
-        return min(ceil(measured) + 2, maxTextWidth * CGFloat(textScale))
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .pointerHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
-            .overlay(alignment: alignment) {
-                if hover && look.showTooltips {
-                    Text(text)
-                        .font(look.font(11, .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(width: Self.textWidth(text, textScale: look.textScale))
-                        .fixedSize()
-                        .padding(.horizontal, Self.padding).padding(.vertical, 4)
-                        .background(Capsule().fill(Color.black.opacity(0.85)))
-                        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
-                        .offset(offset)
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                }
-            }
-            .zIndex(hover ? 1 : 0)
-    }
-}
-
-extension View {
-    func hoverTip(_ text: String) -> some View { modifier(HoverTip(text: text)) }
-
-    /// A soft white halo around a pill button while the pointer is on it.
-    func hoverHalo<S: Shape>(_ shape: S) -> some View { modifier(HoverHalo(shape: shape)) }
-}
-
-/// The pill's hover state: a faint white wash over the button and a low glow around it.
-struct HoverHalo<S: Shape>: ViewModifier {
-    var shape: S
-    @ViewState private var hover = false
-
-    func body(content: Content) -> some View {
-        content
-            .background(
-                shape.fill(Color.white.opacity(hover ? 0.2 : 0))
-                    .blur(radius: 7)
-                    .scaleEffect(hover ? 1.18 : 0.9)
-                    .allowsHitTesting(false)
-            )
-            .overlay(
-                shape.fill(Color.white.opacity(hover ? 0.11 : 0))
-                    .overlay(shape.stroke(Color.white.opacity(hover ? 0.18 : 0), lineWidth: 0.75))
-                    .allowsHitTesting(false)
-            )
-            .pointerHover { h in withAnimation(.easeOut(duration: 0.16)) { hover = h } }
+extension StatusGlyph where Value == AgentStatus {
+    /// Spinner arc / dot used for agents in the pill and lists. Pops when the agent stops working.
+    init(status: AgentStatus, size: CGFloat = 9, heat: HeatLevel = .none, pop: CGFloat = 1.6) {
+        self.init(status, working: status == .working, color: status.color, hot: heat == .hot, size: size, pop: pop)
     }
 }

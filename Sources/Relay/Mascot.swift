@@ -1,4 +1,28 @@
 import SwiftUI
+import NimbiKit
+
+// MARK: - The mascot
+
+/// Relay's mascot: the nimbi cloud, with its mood following your agents. It dozes when there
+/// are none, gets livelier with every agent at work (each one a droplet circling it), puffs up
+/// and turns red when a question has been left waiting, beams when you answer, and sulks when
+/// nobody has looked in a while.
+struct Mascot: View {
+    var size: CGFloat = 32
+    /// -1 looks left, 1 looks right. Only used when it does not follow the cursor.
+    var glance: CGFloat = 0
+    var blinks = true
+    var followsCursor = true
+    /// Breathes and swirls all the time. When false it holds still (blinks aside) and only stirs
+    /// for a moment when its mood changes: for a cloud that is always on screen.
+    var lively = true
+    @ObservedObject private var engine = MoodEngine.shared
+
+    var body: some View {
+        NimbiCloud(size: size, mood: engine.mood, working: engine.working, glance: glance, blinks: blinks,
+                   followsCursor: followsCursor, lively: lively)
+    }
+}
 
 // MARK: - "Agent needs you"
 
@@ -74,142 +98,5 @@ private struct ToastChrome: ViewModifier {
         } else {
             content.pillChrome(Capsule())
         }
-    }
-}
-
-// MARK: - Pill pieces
-
-/// The collapsed pill: a tab rounded on its left that flares into the screen edge at both ends,
-/// so it reads as part of the edge rather than a chip floating next to it.
-struct EdgeTab: Shape {
-    var radius: CGFloat = 5
-    var flare: CGFloat = 5
-    /// On the left edge: rounded on its right, flaring into the left edge.
-    var mirrored = false
-
-    func path(in rect: CGRect) -> Path {
-        let p = rightEdge(in: rect)
-        guard mirrored else { return p }
-        return p.applying(CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: rect.minX + rect.maxX, ty: 0))
-    }
-
-    private func rightEdge(in rect: CGRect) -> Path {
-        let f = min(flare, rect.height / 4)
-        let top = rect.minY + f, bottom = rect.maxY - f
-        let r = min(radius, (bottom - top) / 2, rect.width - f)
-        var p = Path()
-        p.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        p.addArc(tangent1End: CGPoint(x: rect.maxX, y: top), tangent2End: CGPoint(x: rect.minX, y: top), radius: f)
-        p.addArc(tangent1End: CGPoint(x: rect.minX, y: top), tangent2End: CGPoint(x: rect.minX, y: bottom), radius: r)
-        p.addArc(tangent1End: CGPoint(x: rect.minX, y: bottom), tangent2End: CGPoint(x: rect.maxX, y: bottom), radius: r)
-        p.addArc(tangent1End: CGPoint(x: rect.maxX, y: bottom), tangent2End: CGPoint(x: rect.maxX, y: rect.maxY), radius: f)
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        p.closeSubpath()
-        return p
-    }
-}
-
-/// The expanded pill's chrome. On macOS 26 and later it is Liquid Glass, smoked dark so the
-/// white glyphs stay legible on any wallpaper; pieces that share a glass container blend and
-/// morph into each other by `id`. Earlier systems get a flat dark fill under a thin rim.
-struct PillChrome<S: Shape>: ViewModifier {
-    var shape: S
-    var active = false
-    var id: String?
-    var namespace: Namespace.ID?
-    /// Off while pieces overlap as one, so their smoke doesn't stack into darker bands.
-    var smoke = true
-
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            glass(content)
-        } else {
-            content
-                .background(shape.fill(Color(hex: active ? "#2C2C2E" : "#111112")))
-                .overlay(shape.stroke(Color.white.opacity(active ? 0.24 : 0.14), lineWidth: 1))
-                .shadow(color: .black.opacity(0.32), radius: 5, y: 2)
-        }
-    }
-
-    @available(macOS 26.0, *)
-    @ViewBuilder private func glass(_ content: Content) -> some View {
-        // A black tint barely darkens glass; smoke laid under it does, and keeps the glass's edge light.
-        let glassy = content
-            .background(shape.fill(Color.black.opacity(smoke ? (active ? 0.22 : 0.48) : 0)))
-            .glassEffect(.regular, in: shape)
-        if let id, let namespace {
-            glassy.glassEffectID(id, in: namespace)
-        } else {
-            glassy
-        }
-    }
-}
-
-extension View {
-    func pillChrome<S: Shape>(_ shape: S, active: Bool = false, id: String? = nil, in namespace: Namespace.ID? = nil,
-                              smoke: Bool = true) -> some View {
-        modifier(PillChrome(shape: shape, active: active, id: id, namespace: namespace, smoke: smoke))
-    }
-
-    /// Lets the pill's glass pieces melt into each other as they move (macOS 26+).
-    @ViewBuilder func glassGroup(spacing: CGFloat) -> some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) { self }
-        } else {
-            self
-        }
-    }
-}
-
-/// Red level bars that replace the mic while it listens.
-struct ListeningBars: View {
-    var color: Color = Color(hex: "#FF4F5E")
-    var height: CGFloat = 13
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            HStack(spacing: height * 0.16) {
-                ForEach(0..<4, id: \.self) { i in
-                    let phase = t * (5.5 + Double(i) * 1.3) + Double(i) * 1.7
-                    let level = 0.35 + 0.65 * abs(sin(phase) * cos(phase * 0.37))
-                    Capsule()
-                        .fill(color)
-                        .frame(width: height * 0.17, height: max(height * 0.22, height * level))
-                }
-            }
-            .frame(height: height)
-        }
-    }
-}
-
-// MARK: - Status changes
-
-/// Pops a status glyph when its status changes (an agent finished, or started asking),
-/// the way One's dots swell for a moment.
-struct StatusPop<V: Equatable>: ViewModifier {
-    var value: V
-    var strength: CGFloat = 1.5
-    /// Only pop for changes this returns true for.
-    var when: (V) -> Bool = { _ in true }
-    @ViewState private var scale: CGFloat = 1
-
-    func body(content: Content) -> some View {
-        content
-            .scaleEffect(scale)
-            .onChange(of: value) { v in
-                guard when(v) else { return }
-                scale = 0.35
-                withAnimation(.spring(response: 0.22, dampingFraction: 0.5)) { scale = strength }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.62)) { scale = 1 }
-                }
-            }
-    }
-}
-
-extension View {
-    func popOnChange<V: Equatable>(of value: V, strength: CGFloat = 1.5, when: @escaping (V) -> Bool = { _ in true }) -> some View {
-        modifier(StatusPop(value: value, strength: strength, when: when))
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import NimbiKit
 
 // MARK: - Model
 
@@ -220,12 +221,12 @@ final class HeatMonitor: ObservableObject {
 // MARK: - Fire
 
 enum Fire {
-    static let core = Color(hex: "#FFF2B0")
-    static let yellow = Color(hex: "#FFC93C")
-    static let orange = Color(hex: "#FF7A1A")
-    static let red = Color(hex: "#E8332A")
-    static let ember = Color(hex: "#8E1B12")
-    static let coal = Color(hex: "#2A0E0A")
+    static let core = Nimbi.Heat.core
+    static let yellow = Nimbi.Heat.yellow
+    static let orange = Nimbi.Heat.orange
+    static let red = Nimbi.Heat.red
+    static let ember = Nimbi.Heat.ember
+    static let coal = Nimbi.Heat.coal
 
     static let gradient = LinearGradient(colors: [yellow, orange, red], startPoint: .top, endPoint: .bottom)
     static let ring = AngularGradient(colors: [yellow, orange, red, orange, yellow], center: .center)

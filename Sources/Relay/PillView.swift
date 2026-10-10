@@ -1,4 +1,5 @@
 import SwiftUI
+import NimbiKit
 
 /// The strip on the right edge of the screen. Collapsed it is a sliver of status glyphs;
 /// hovering opens the control column: inbox, agents, talk, screenshot and settings.

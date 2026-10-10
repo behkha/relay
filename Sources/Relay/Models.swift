@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import NimbiKit
 
 /// A Claude Code account. Each workspace is a separate CLAUDE_CONFIG_DIR,
 /// so each one keeps its own login (Gmail), settings, history and hooks.
@@ -254,44 +255,27 @@ enum InboxFilter: String, CaseIterable, Codable {
     }
 }
 
+/// Relay's names for the nimbi tokens (NimbiKit's `Nimbi`).
 enum Theme {
-    static let blue = Color(hex: "#0A84FF")
-    static let amber = Color(hex: "#F2B33D")
-    static let green = Color(hex: "#30D158")
-    static let red = Color(hex: "#FF6961")
-    static let claude = Color(hex: "#D97757")
+    static let blue = Nimbi.State.working
+    static let amber = Nimbi.State.waiting
+    static let green = Nimbi.State.done
+    static let red = Nimbi.State.destructive
+    static let claude = Nimbi.State.claude
     /// Solid panel fill (card, agents list, menus): near-black, no blur.
-    static let card = Color(hex: "#141414")
-    static let cardBorder = Color.white.opacity(0.08)
-    static let row = Color.white.opacity(0.055)
-    static let rowBorder = Color.white.opacity(0.07)
-    static let textDim = Color.white.opacity(0.55)
-    static let textFaint = Color.white.opacity(0.38)
+    static let card = Nimbi.Surface.panel
+    static let cardBorder = Nimbi.Line.card
+    static let row = Nimbi.Surface.row
+    static let rowBorder = Nimbi.Line.row
+    static let textDim = Nimbi.Text.dim
+    static let textFaint = Nimbi.Text.faint
     /// Your instruction, right-aligned in the card.
-    static let promptBubble = Color(hex: "#13467E")
+    static let promptBubble = Nimbi.State.promptBubble
     /// The agent's words, left-aligned in the card.
-    static let agentBubble = Color(hex: "#262626")
+    static let agentBubble = Nimbi.State.agentBubble
     /// A picked option, just before it is sent.
-    static let selectedFill = Color(hex: "#143A20")
-    static let selectedBorder = Color(hex: "#30D158").opacity(0.55)
-}
-
-extension Color {
-    init(hex: String) {
-        var s = hex.trimmingCharacters(in: .whitespaces)
-        if s.hasPrefix("#") { s.removeFirst() }
-        var v: UInt64 = 0
-        Scanner(string: s).scanHexInt64(&v)
-        let r, g, b: Double
-        if s.count == 6 {
-            r = Double((v >> 16) & 0xFF) / 255
-            g = Double((v >> 8) & 0xFF) / 255
-            b = Double(v & 0xFF) / 255
-        } else {
-            r = 0.6; g = 0.6; b = 0.6
-        }
-        self.init(.sRGB, red: r, green: g, blue: b, opacity: 1)
-    }
+    static let selectedFill = Nimbi.State.selectedFill
+    static let selectedBorder = Nimbi.State.selectedBorder
 }
 
 enum Shell {

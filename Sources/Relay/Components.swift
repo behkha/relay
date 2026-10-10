@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import NimbiKit
 
 // MARK: - Pieces
 
@@ -158,30 +159,5 @@ struct MessageText: View {
         .lineLimit(lineLimit)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-struct PrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .lineLimit(1)
-            .fixedSize()
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.black)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.75 : 0.95)))
-    }
-}
-
-struct SecondaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .lineLimit(1)
-            .fixedSize()
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(Color.white.opacity(0.88))
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0.08)))
-            .overlay(Capsule().stroke(Theme.rowBorder, lineWidth: 1))
     }
 }

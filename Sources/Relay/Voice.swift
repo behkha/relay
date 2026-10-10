@@ -3,6 +3,7 @@ import SwiftUI
 import Speech
 import AVFoundation
 import Combine
+import NimbiKit
 
 /// The quick bar: double-tap Option (or click the mic) and say or type what you need.
 /// It goes to the agent on the card or the agent you picked from the list. Otherwise Relay

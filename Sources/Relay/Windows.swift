@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import NimbiKit
 
 /// Borderless floating panel that can take keyboard focus without activating the app.
 final class FloatingPanel: NSPanel {

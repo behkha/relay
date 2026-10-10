@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CryptoKit
 import IOKit.pwr_mgt
+import NimbiKit
 
 /// Checks run by `Relay --self-test` (scripts/selftest.sh). Package.swift has no test target and XCTest
 /// isn't guaranteed with only the Command Line Tools, so the app carries its own small harness.

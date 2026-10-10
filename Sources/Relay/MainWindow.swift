@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ServiceManagement
+import NimbiKit
 
 enum MainTab: String, CaseIterable, Identifiable {
     case workspaces = "Workspaces"

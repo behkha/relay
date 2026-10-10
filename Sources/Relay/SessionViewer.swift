@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import NimbiKit
 
 // MARK: - Transcript model
 
