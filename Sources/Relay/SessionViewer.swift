@@ -547,16 +547,25 @@ final class SessionViewerController: NSObject, NSWindowDelegate {
             snapshot: TerminalSnapshot(loc: s.terminal),
             onClose: { [weak self] in self?.close() }))
 
-        // Sit to the left of the pill / card, vertically centered on it.
+        // Sit beside the pill / card, toward the middle of the screen, vertically centered on it.
+        // At the notch: left of the island or card, just under the menu bar.
         let center = anchor.map { NSPoint(x: $0.midX, y: $0.midY) } ?? NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) }) ?? NSScreen.main
                 ?? NSScreen.screens.first else { self.sessionId = nil; return }
         let vf = screen.visibleFrame
         let size = NSSize(width: 520, height: min(680, vf.height - 40))
-        let right = (anchor?.minX ?? vf.maxX) - 10
-        var y = (anchor?.midY ?? vf.midY) - size.height / 2
+        let dock = Appearance.shared.dock
+        var x: CGFloat
+        if dock == .left {
+            x = min((anchor?.maxX ?? vf.minX) + 10, vf.maxX - size.width - 10)
+        } else {
+            x = (anchor?.minX ?? vf.maxX) - 10 - size.width
+            if dock == .notch, x < vf.minX + 10, let a = anchor { x = a.maxX + 10 }   // no room on the left
+            x = max(vf.minX + 10, x)
+        }
+        var y = dock == .notch ? vf.maxY - 10 - size.height : (anchor?.midY ?? vf.midY) - size.height / 2
         y = min(max(y, vf.minY + 10), vf.maxY - size.height - 10)
-        p.setFrame(NSRect(x: max(vf.minX + 10, right - size.width), y: y, width: size.width, height: size.height), display: true)
+        p.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
 
         panel = p
         NSApp.activate(ignoringOtherApps: true)

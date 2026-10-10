@@ -13,6 +13,7 @@ struct PillView: View {
     var onScreenshotVoice: () -> Void
     var onHome: () -> Void
     var onMore: () -> Void
+    @ObservedObject var notch: NotchGeometry
 
     @Namespace private var glass
     /// The column is on screen (rather than the sliver).
@@ -32,26 +33,39 @@ struct PillView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            Group {
-                if columnShown {
-                    expanded
-                        .scaleEffect(look.pillScale, anchor: .trailing)
-                        .padding(.trailing, 7)
-                        .transition(morphs
-                            ? .asymmetric(insertion: .identity,
-                                          removal: .scale(scale: 0.3, anchor: .trailing).combined(with: .opacity))
-                            : .asymmetric(
-                            insertion: .scale(scale: 0.55, anchor: .trailing).combined(with: .opacity),
-                            removal: .scale(scale: 0.8, anchor: .trailing).combined(with: .opacity)))
-                } else {
-                    collapsed.transition(morphs ? .identity : .opacity)
-                }
-            }
-            .glassGroup(spacing: 6)
+        if look.dock == .notch {
+            NotchIsland(store: store, ui: ui, geo: notch,
+                        onInbox: onInbox, onAgents: onAgents, onVoice: onVoice,
+                        onScreenshotVoice: onScreenshotVoice, onHome: onHome, onMore: onMore)
+        } else {
+            edgePill
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// On the left edge everything is mirrored: the column hugs the left and grows rightward.
+    private var onLeft: Bool { look.dock == .left }
+    private var edge: UnitPoint { onLeft ? .leading : .trailing }
+
+    private var edgePill: some View {
+        Group {
+            if columnShown {
+                // Sized by layout rather than scaled: Liquid Glass draws at a view's laid-out size,
+                // so a scaleEffect leaves the glass behind its scaled contents.
+                expanded
+                    .padding(onLeft ? .leading : .trailing, 7 * k)
+                    .transition(morphs
+                        ? .asymmetric(insertion: .identity,
+                                      removal: .scale(scale: 0.3, anchor: edge).combined(with: .opacity))
+                        : .asymmetric(
+                        insertion: .scale(scale: 0.55, anchor: edge).combined(with: .opacity),
+                        removal: .scale(scale: 0.8, anchor: edge).combined(with: .opacity)))
+            } else {
+                collapsed
+                    .transition(morphs ? .identity : .opacity)
+            }
+        }
+        .glassGroup(spacing: 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: onLeft ? .leading : .trailing)
         .onAppear { columnShown = isExpanded; split = isExpanded }
         .onChange(of: isExpanded) { open in morph(open) }
     }
@@ -87,6 +101,9 @@ struct PillView: View {
 
     private var sessions: [AgentSession] { Array(store.visibleSessions.prefix(10)) }
 
+    /// The pill size setting; every measurement below is multiplied by it.
+    private var k: CGFloat { CGFloat(look.pillScale) }
+
     /// Amber while the agent has a question waiting in the inbox, whatever its hook status says.
     private func shown(_ s: AgentSession) -> AgentStatus {
         store.items.contains { $0.sessionId == s.id && $0.isActionable } ? .waiting : s.shownStatus
@@ -95,17 +112,17 @@ struct PillView: View {
     // MARK: Collapsed
 
     private var collapsed: some View {
-        VStack(spacing: 5) {
+        VStack(spacing: 5 * k) {
             if sessions.isEmpty {
-                Circle().fill(Color.white.opacity(0.35)).frame(width: 4, height: 4)
+                Circle().fill(Color.white.opacity(0.35)).frame(width: 4 * k, height: 4 * k)
             }
             ForEach(sessions) { s in
-                StatusGlyph(status: shown(s), size: 5.5, heat: heat.heat[s.id]?.level ?? .none, pop: 1.9)
+                StatusGlyph(status: shown(s), size: 5.5 * k, heat: heat.heat[s.id]?.level ?? .none, pop: 1.9)
             }
         }
-        .padding(.vertical, 7 + Self.flare)
-        .frame(width: 10)
-        .modifier(CollapsedChrome(shape: EdgeTab(radius: 5, flare: Self.flare), id: "column", namespace: glass))
+        .padding(.vertical, (7 + Self.flare) * k)
+        .frame(width: 10 * k)
+        .modifier(CollapsedChrome(shape: EdgeTab(radius: 5 * k, flare: Self.flare * k, mirrored: onLeft), id: "column", namespace: glass))
     }
 
     static let flare: CGFloat = 6
@@ -119,11 +136,11 @@ struct PillView: View {
 
     private func height(_ section: Section) -> CGFloat {
         switch section {
-        case .inbox, .more: return 32
+        case .inbox, .more: return 32 * k
         case .agents:
             let n = CGFloat(sessions.count)
-            return n == 0 ? 0 : n * 9 + (n - 1) * 7 + 20
-        case .talk: return 91
+            return n == 0 ? 0 : (n * 9 + (n - 1) * 7 + 20) * k
+        case .talk: return 91 * k
         }
     }
 
@@ -132,11 +149,11 @@ struct PillView: View {
     private func gathered(_ section: Section) -> CGFloat {
         guard !split else { return 0 }
         let present = Section.allCases.filter { height($0) > 0 }
-        let total = present.map(height).reduce(0, +) + Self.gap * CGFloat(present.count - 1)
+        let total = present.map(height).reduce(0, +) + Self.gap * k * CGFloat(present.count - 1)
         var top: CGFloat = 0
         for s in present {
             if s == section { return total / 2 - (top + height(s) / 2) }
-            top += height(s) + Self.gap
+            top += height(s) + Self.gap * k
         }
         return 0
     }
@@ -158,32 +175,34 @@ struct PillView: View {
     private func smokes(_ section: Section) -> Bool { split || glassID(section) == "column" }
 
     private var expanded: some View {
-        VStack(spacing: Self.gap) {
+        VStack(spacing: Self.gap * k) {
             // Inbox
             Button(action: onInbox) {
                 emerging(Image(systemName: "tray")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13 * k, weight: .medium))
                     .foregroundStyle(.white))
-                    .frame(width: 32, height: 32)
+                    .frame(width: 32 * k, height: 32 * k)
                     .pillChrome(Circle(), active: ui.cardOpen, id: glassID(.inbox), in: glass, smoke: smokes(.inbox))
-                    .overlay(alignment: .topTrailing) { inboxBadge.opacity(split ? 1 : 0) }
+                    .hoverHalo(Circle())
+                    .overlay(alignment: onLeft ? .topLeading : .topTrailing) { inboxBadge.opacity(split ? 1 : 0) }
             }
             .buttonStyle(PressScale())
             .focusable(false)
-            .hoverTip(store.waitingCount > 0 ? "\(store.waitingCount) waiting · ⌃⌥Space" : "Inbox · ⌃⌥Space")
+            .hoverTip(store.waitingCount > 0 ? "Inbox · \(store.waitingCount) waiting · ⌃⌥Space" : "Inbox · ⌃⌥Space")
             .offset(y: gathered(.inbox))
 
             // Agents
             if !sessions.isEmpty {
                 Button(action: onAgents) {
-                    emerging(VStack(spacing: 7) {
+                    emerging(VStack(spacing: 7 * k) {
                         ForEach(sessions) { s in
-                            StatusGlyph(status: shown(s), size: 9, heat: heat.heat[s.id]?.level ?? .none, pop: 1.8)
+                            StatusGlyph(status: shown(s), size: 9 * k, heat: heat.heat[s.id]?.level ?? .none, pop: 1.8)
                         }
                     })
-                    .padding(.vertical, 10)
-                    .frame(width: 32)
+                    .padding(.vertical, 10 * k)
+                    .frame(width: 32 * k)
                     .pillChrome(Capsule(), active: ui.sidePanel == .agents, id: glassID(.agents), in: glass, smoke: smokes(.agents))
+                    .hoverHalo(Capsule())
                     .contentShape(Capsule())
                 }
                 .buttonStyle(PressScale())
@@ -193,33 +212,34 @@ struct PillView: View {
             }
 
             // Talk group
-            emerging(VStack(spacing: 1) {
-                GroupButton(help: "Workspaces", action: onHome) {
-                    Mascot(size: 20)
+            emerging(VStack(spacing: 1 * k) {
+                GroupButton(help: "Workspaces · accounts and settings", scale: k, action: onHome) {
+                    Mascot(size: 20 * k)
                 }
-                GroupButton(help: ui.listening ? "Listening · ⌥⌥ sends" : "Talk · ⌥⌥", action: onVoice) {
+                GroupButton(help: ui.listening ? "Listening · ⌥⌥ sends" : "Talk to an agent · ⌥⌥", scale: k, action: onVoice) {
                     if ui.listening {
-                        ListeningBars(height: 13)
+                        ListeningBars(height: 13 * k)
                     } else {
-                        Image(systemName: "mic").font(.system(size: 13, weight: .medium))
+                        Image(systemName: "mic").font(.system(size: 13 * k, weight: .medium))
                     }
                 }
-                GroupButton(help: "Talk with a screenshot", action: onScreenshotVoice) {
-                    Image(systemName: "camera").font(.system(size: 12.5, weight: .medium))
+                GroupButton(help: "Talk with a screenshot", scale: k, action: onScreenshotVoice) {
+                    Image(systemName: "camera").font(.system(size: 12.5 * k, weight: .medium))
                 }
             })
-            .padding(.vertical, 5)
-            .frame(width: 32)
+            .padding(.vertical, 5 * k)
+            .frame(width: 32 * k)
             .pillChrome(Capsule(), active: ui.talking, id: glassID(.talk), in: glass, smoke: smokes(.talk))
             .offset(y: gathered(.talk))
 
             // More
             Button(action: onMore) {
                 emerging(Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 11 * k, weight: .bold))
                     .foregroundStyle(.white))
-                    .frame(width: 32, height: 32)
+                    .frame(width: 32 * k, height: 32 * k)
                     .pillChrome(Circle(), active: ui.panelOpen && ui.sidePanel == .settings, id: glassID(.more), in: glass, smoke: smokes(.more))
+                    .hoverHalo(Circle())
             }
             .buttonStyle(PressScale())
             .focusable(false)
@@ -246,7 +266,7 @@ struct PillView: View {
         if let (id, h) = heat.hottest, let s = store.sessions[id] { parts.append("🔥 \(s.displayName) · \(h.cpuLabel)") }
         if working > 0 { parts.append("\(working) working") }
         if waiting > 0 { parts.append("\(waiting) waiting") }
-        return parts.isEmpty ? "\(sessions.count) agents" : parts.joined(separator: " · ")
+        return "Agents · " + (parts.isEmpty ? "\(sessions.count) running" : parts.joined(separator: " · "))
     }
 }
 
@@ -297,6 +317,7 @@ struct PressScale: ButtonStyle {
 
 private struct GroupButton<Icon: View>: View {
     var help: String
+    var scale: CGFloat = 1
     var action: () -> Void
     @ViewBuilder var icon: () -> Icon
     @ViewState private var hover = false
@@ -305,12 +326,13 @@ private struct GroupButton<Icon: View>: View {
         Button(action: action) {
             icon()
                 .foregroundStyle(Color.white.opacity(hover ? 1 : 0.9))
-                .frame(width: 30, height: 27)
+                .frame(width: 30 * scale, height: 27 * scale)
+                .hoverHalo(Capsule())
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressScale())
         .focusable(false)
-        .onHover { hover = $0 }
+        .pointerHover { hover = $0 }
         .hoverTip(help)
     }
 }

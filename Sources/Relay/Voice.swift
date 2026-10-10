@@ -351,9 +351,21 @@ final class VoiceController: NSObject, ObservableObject {
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) })
                 ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let vf = screen.visibleFrame
-        var x = (a?.minX ?? vf.maxX) - size.width + 8
-        var y = (a?.midY ?? vf.midY) - size.height / 2
-        x = max(vf.minX + 8, x)
+        var x: CGFloat
+        var y: CGFloat
+        switch Appearance.shared.dock {
+        case .right:
+            x = (a?.minX ?? vf.maxX) - size.width + 8
+            y = (a?.midY ?? vf.midY) - size.height / 2
+        case .left:
+            x = (a?.maxX ?? vf.minX) - 8
+            y = (a?.midY ?? vf.midY) - size.height / 2
+        case .notch:
+            // Hanging under the island (or under the card when it's open); 12 is the bar's top margin.
+            x = (a?.midX ?? vf.midX) - size.width / 2
+            y = (a?.minY ?? vf.maxY) - size.height + 12
+        }
+        x = min(max(vf.minX + 8, x), vf.maxX - size.width - 8)
         y = min(max(y, vf.minY + 8), vf.maxY - size.height - 8)
         panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
     }
@@ -440,7 +452,7 @@ struct QuickBar: View {
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 0.75))
         .shadow(color: .black.opacity(0.32), radius: 16, y: 8)
         .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 28)
-        .scaleEffect(visible ? 1 : 0.9, anchor: .trailing)
+        .scaleEffect(visible ? 1 : 0.9, anchor: look.dock.growAnchor)
         .opacity(visible ? 1 : 0)
         .animation(.spring(response: 0.32, dampingFraction: 0.82), value: visible)
         .animation(.easeOut(duration: 0.2), value: voice.sentTo?.handle)

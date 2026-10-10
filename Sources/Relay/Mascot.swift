@@ -20,33 +20,60 @@ struct NeedsYouToast: View {
     private var shown: Bool { model.phase == .shown }
     private var leaving: Bool { model.phase == .leaving }
 
+    /// Which way it slides: away from the edge the pill is on, or down out of the notch.
+    private var dock: PillDock { look.dock }
+    /// Toward the middle of the screen: -1 from the right edge, 1 from the left, 0 down from the notch.
+    private var away: CGFloat { dock == .right ? -1 : (dock == .left ? 1 : 0) }
+    private var alignment: Alignment {
+        switch dock {
+        case .right: return .topTrailing
+        case .left: return .topLeading
+        case .notch: return .top
+        }
+    }
+
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack(alignment: alignment) {
             Text(model.text)
                 .font(look.font(14.5))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .fixedSize()
                 .padding(.horizontal, 15).padding(.vertical, 8.5)
-                .pillChrome(Capsule())
+                .modifier(ToastChrome(notch: dock == .notch))
                 .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
                 // Comes out of the pill: from under it, small and see-through, to full size.
-                .scaleEffect(shown ? 1 : (leaving ? 0.55 : 0.4), anchor: .trailing)
-                .offset(x: shown ? 0 : 34)
+                .scaleEffect(shown ? 1 : (leaving ? 0.55 : 0.4), anchor: dock.growAnchor)
+                .offset(x: shown ? 0 : -34 * away, y: shown || dock != .notch ? 0 : -24)
                 .opacity(shown ? 1 : 0)
                 .animation(leaving ? .easeIn(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.8), value: model.phase)
-                .padding(.trailing, pillWidth + 5)
+                .padding(dock == .left ? .leading : .trailing, dock == .notch ? 0 : pillWidth + 5)
                 .padding(.top, 8)
 
-            Mascot(size: 40, glance: shown ? -1 : 0, followsCursor: false)
+            Mascot(size: 40, glance: shown ? away : 0, followsCursor: false)
                 // Peeks out from behind the pill's top, then drops below the toast with a bounce.
                 .scaleEffect(shown ? 1 : 0.5)
-                .offset(x: shown ? -(pillWidth + 4) : 8, y: shown ? 50 : 0)
+                .offset(x: shown ? (pillWidth + 4) * away : -8 * away, y: shown ? 50 : 0)
                 .opacity(model.phase == .hidden ? 0 : (leaving ? 0 : 1))
                 .animation(leaving ? .easeIn(duration: 0.2) : .spring(response: 0.55, dampingFraction: 0.56).delay(0.06),
                            value: model.phase)
         }
-        .frame(width: 300, height: 140, alignment: .topTrailing)
+        .frame(width: 300, height: 140, alignment: alignment)
+    }
+}
+
+/// The toast's capsule: the pill's glass on an edge; at the notch, black like the island it drops from.
+private struct ToastChrome: ViewModifier {
+    var notch: Bool
+
+    func body(content: Content) -> some View {
+        if notch {
+            content
+                .background(Capsule().fill(Color.black))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
+        } else {
+            content.pillChrome(Capsule())
+        }
     }
 }
 
@@ -57,8 +84,16 @@ struct NeedsYouToast: View {
 struct EdgeTab: Shape {
     var radius: CGFloat = 5
     var flare: CGFloat = 5
+    /// On the left edge: rounded on its right, flaring into the left edge.
+    var mirrored = false
 
     func path(in rect: CGRect) -> Path {
+        let p = rightEdge(in: rect)
+        guard mirrored else { return p }
+        return p.applying(CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: rect.minX + rect.maxX, ty: 0))
+    }
+
+    private func rightEdge(in rect: CGRect) -> Path {
         let f = min(flare, rect.height / 4)
         let top = rect.minY + f, bottom = rect.maxY - f
         let r = min(radius, (bottom - top) / 2, rect.width - f)
