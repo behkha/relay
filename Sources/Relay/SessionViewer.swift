@@ -554,18 +554,8 @@ final class SessionViewerController: NSObject, NSWindowDelegate {
                 ?? NSScreen.screens.first else { self.sessionId = nil; return }
         let vf = screen.visibleFrame
         let size = NSSize(width: 520, height: min(680, vf.height - 40))
-        let dock = Appearance.shared.dock
-        var x: CGFloat
-        if dock == .left {
-            x = min((anchor?.maxX ?? vf.minX) + 10, vf.maxX - size.width - 10)
-        } else {
-            x = (anchor?.minX ?? vf.maxX) - 10 - size.width
-            if dock == .notch, x < vf.minX + 10, let a = anchor { x = a.maxX + 10 }   // no room on the left
-            x = max(vf.minX + 10, x)
-        }
-        var y = dock == .notch ? vf.maxY - 10 - size.height : (anchor?.midY ?? vf.midY) - size.height / 2
-        y = min(max(y, vf.minY + 10), vf.maxY - size.height - 10)
-        p.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        let origin = Self.origin(size: size, anchor: anchor, visible: vf, dock: Appearance.shared.dock)
+        p.setFrame(NSRect(origin: origin, size: size), display: true)
 
         panel = p
         NSApp.activate(ignoringOtherApps: true)
@@ -576,6 +566,28 @@ final class SessionViewerController: NSObject, NSWindowDelegate {
             self.close()
             return nil
         }
+    }
+
+    /// Where a viewer of `size` goes beside `anchor` (the pill, the card or the island) in the
+    /// screen's visible frame `vf`: toward the middle of the screen, vertically centred on the
+    /// anchor; at the notch left of it (right when there's no room), just under the menu bar.
+    /// Always on screen: where it doesn't fit beside the anchor it overlaps it instead.
+    static func origin(size: NSSize, anchor: NSRect?, visible vf: NSRect, dock: PillDock) -> NSPoint {
+        var x: CGFloat
+        switch dock {
+        case .left:
+            x = (anchor?.maxX ?? vf.minX) + 10
+        case .right:
+            x = (anchor?.minX ?? vf.maxX) - 10 - size.width
+        case .notch:
+            x = (anchor?.minX ?? vf.maxX) - 10 - size.width
+            if x < vf.minX + 10, let a = anchor { x = a.maxX + 10 }   // no room on the left
+        }
+        // The left edge wins on a screen too narrow for it.
+        x = max(vf.minX + 10, min(x, vf.maxX - size.width - 10))
+        var y = dock == .notch ? vf.maxY - 10 - size.height : (anchor?.midY ?? vf.midY) - size.height / 2
+        y = min(max(y, vf.minY + 10), vf.maxY - size.height - 10)
+        return NSPoint(x: x, y: y)
     }
 
     func close() {

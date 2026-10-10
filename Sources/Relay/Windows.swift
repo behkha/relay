@@ -52,7 +52,10 @@ final class OverlayController: NSObject {
     let notch = NotchGeometry()
     /// The pointer over the pill's window, for hover while Relay isn't the active app.
     private let pointer = PointerTracker()
+    private var pillHost: HoverHostingView<AnyView>!
     private var pointerPoll: Timer?
+    /// Opens the island once the pointer has rested on it for a moment (updateIslandHitTesting).
+    private var dwellWork: DispatchWorkItem?
     private var islandWatch: Timer?
     private var outsideTicks = 0
     /// How long a panel takes to roll back up into the island before its window goes.
@@ -68,9 +71,15 @@ final class OverlayController: NSObject {
     var phoneOn: () -> Bool = { false }
 
     static let collapsedWidth: CGFloat = 12
-    /// Wide enough for the hover labels that appear left of the buttons (transparent there).
-    static let expandedWidth: CGFloat = 200
     static let pillHeight: CGFloat = 380
+
+    /// The open pill's window on an edge: wide enough for the hover labels that appear beside the
+    /// buttons (transparent there). That is the buttons' strip (7 of padding, the button), the
+    /// gap to the label, and the longest label at the text size (HoverTip.maxTextWidth).
+    static func expandedWidth(pillScale k: CGFloat, textScale: Double) -> CGFloat {
+        let label = HoverTip.maxTextWidth * CGFloat(textScale) + 2 * HoverTip.padding
+        return max(200, 46 * k + 156, (8 + HoverTip.gap) * k + label + 4).rounded(.up)
+    }
 
     init(store: Store, ui: UIState) {
         self.store = store
@@ -95,11 +104,21 @@ final class OverlayController: NSObject {
             onHome: { [weak self] in self?.closeSide(); self?.onHome?() },
             onMore: { [weak self] in self?.toggleSide(.settings) },
             notch: notch)
-        let pillHost = HoverHostingView(rootView: AnyView(pillView.environment(\.pointerTracker, pointer)))
+        pillHost = HoverHostingView(rootView: AnyView(pillView.environment(\.pointerTracker, pointer)))
         pillHost.tracker = pointer
-        pillHost.onHover = { [weak self] inside in self?.setHover(inside) }
+        pillHost.onHover = { [weak self] inside in
+            guard let self else { return }
+            // At the notch, opening waits for the pointer to rest on the island.
+            if inside && self.dock == .notch { self.updateIslandHitTesting() } else { self.setHover(inside) }
+        }
         // Moving onto the island inside a window still held open after it closed.
         pillHost.onMove = { [weak self] in self?.updateIslandHitTesting() }
+        // At the notch the pointer only counts as over the island, not its bigger window, so
+        // the view and updateIslandHitTesting agree on where it is.
+        pillHost.activeArea = { [weak self] in
+            guard let self, self.dock == .notch else { return nil }
+            return self.islandHitRect
+        }
         pill.contentView = pillHost
 
         cardHost = SizeReportingHostingView(rootView: AnyView(
@@ -136,13 +155,6 @@ final class OverlayController: NSObject {
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: card, queue: .main) { [weak self] _ in
             self?.ui.cardIsKey = false
-        }
-        // At the notch: where the pointer is decides whether the island takes clicks (and opens
-        // it). Polled rather than taken from mouse events: the island window ignores the mouse
-        // while the pointer is elsewhere, and a global monitor misses moves into Relay's windows.
-        pointerPoll = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
-            guard let self, self.dock == .notch, self.pill.isVisible else { return }
-            self.updateIslandHitTesting()
         }
         // A click anywhere else closes the side panels.
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -234,7 +246,34 @@ final class OverlayController: NSObject {
         sideHost.layerContentsPlacement = placement
         // At the notch the island sits over the panels hanging from it, hiding the seam.
         pill.level = dock == .notch ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1) : .statusBar
+        // The island reads the pointer on the controller's timer; the edge pill on its own.
+        pillHost.pollsPointer = dock != .notch
         updateNotch()
+        pollPointer()
+    }
+
+    /// At the notch: where the pointer is decides whether the island takes clicks (and opens
+    /// it). Polled rather than taken from mouse events: the island window ignores the mouse
+    /// while the pointer is elsewhere, and a global monitor misses moves into Relay's windows
+    /// (the card under the island, say). Only at the notch and while the pill is on screen;
+    /// quick near the island, slower elsewhere, where it only has to notice the pointer coming.
+    private func pollPointer() {
+        pointerPoll?.invalidate()
+        pointerPoll = nil
+        guard dock == .notch, isPillVisible else {
+            dwellWork?.cancel()
+            dwellWork = nil
+            return
+        }
+        let near = NSMouseInRect(NSEvent.mouseLocation, pill.frame.insetBy(dx: -60, dy: -60), false)
+        let timer = Timer(timeInterval: near ? 1.0 / 30 : 0.1, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.updateIslandHitTesting()
+            self.pollPointer()
+        }
+        timer.tolerance = near ? 0.005 : 0.03
+        RunLoop.main.add(timer, forMode: .common)
+        pointerPoll = timer
     }
 
     /// Takes the notch's measurements from the screen (and the pill size setting).
@@ -249,6 +288,7 @@ final class OverlayController: NSObject {
         set {
             UserDefaults.standard.set(newValue, forKey: "pillVisible")
             if newValue { pill.orderFrontRegardless() } else { pill.orderOut(nil); closeCard() }
+            pollPointer()
         }
     }
 
@@ -313,7 +353,7 @@ final class OverlayController: NSObject {
         let full = screen.frame
         // Sized for the pill at its size setting (its views are scaled from the screen edge).
         let scale = CGFloat(look.pillScale)
-        let width = expanded ? max(Self.expandedWidth, 46 * scale + 156) : Self.collapsedWidth * scale
+        let width = expanded ? Self.expandedWidth(pillScale: scale, textScale: look.textScale) : Self.collapsedWidth * scale
         // Collapsed, the window is only as tall as its dots so it never blocks clicks it doesn't need.
         let dots = max(1, min(store.visibleSessions.count, 8))
         let height = (expanded ? Self.pillHeight : CGFloat(24 + dots * 14)) * scale
@@ -334,9 +374,7 @@ final class OverlayController: NSObject {
     /// The island itself (its black shape, flares included) in a state, in screen coordinates.
     private func islandShape(_ mode: NotchIsland.Mode) -> NSRect? {
         guard let screen else { return nil }
-        let size = notch.size(mode, textScale: look.textScale)
-        let width = size.width + 2 * NotchGeometry.ear
-        return NSRect(x: screen.notchMidX - width / 2, y: screen.frame.maxY - size.height, width: width, height: size.height)
+        return notch.shape(mode, textScale: look.textScale, midX: screen.notchMidX, top: screen.frame.maxY)
     }
 
     /// The island's window: one fixed rectangle under the notch, big enough for the island's
@@ -367,24 +405,45 @@ final class OverlayController: NSObject {
     }
 
     /// The part of the island window that takes the pointer: the island in its current state
-    /// (a little more around the open dashboard, so its edge isn't a hair trigger).
+    /// (see NotchGeometry.hitRect).
     private var islandHitRect: NSRect {
-        guard let shape = islandShape(islandMode) else { return .zero }
-        return islandMode == .dashboard ? shape.insetBy(dx: -6, dy: -8) : shape
+        guard let screen else { return .zero }
+        return notch.hitRect(islandMode, textScale: look.textScale, midX: screen.notchMidX, top: screen.frame.maxY)
     }
 
+    /// How long the pointer has to rest on the collapsed island before it opens, so passing
+    /// over it on the way to the menu bar doesn't drop the dashboard over everything.
+    static let islandDwell: Double = 0.2
+
     /// Lets clicks fall through the island window except over the island, and opens the island
-    /// when the pointer reaches it. Runs on every pointer move (over the island via its view's
-    /// tracking area, elsewhere via a global monitor).
+    /// once the pointer has stayed on it for `islandDwell`. Runs on the pointer poll and on
+    /// moves over the island's view.
     private func updateIslandHitTesting() {
         guard dock == .notch else {
             if pill.ignoresMouseEvents { pill.ignoresMouseEvents = false }
+            dwellWork?.cancel()
+            dwellWork = nil
             return
         }
         let inside = NSMouseInRect(NSEvent.mouseLocation, islandHitRect, false)
         if pill.ignoresMouseEvents == inside { pill.ignoresMouseEvents = !inside }
-        (pill.contentView as? HoverHostingView<AnyView>)?.refreshPointer(inside: inside)
-        if inside && !ui.pillExpanded { setHover(true) }
+        pillHost.refreshPointer()
+        guard inside, !ui.pillExpanded else {
+            // Left before the dwell was up (or it's open already): start over next time.
+            dwellWork?.cancel()
+            dwellWork = nil
+            return
+        }
+        guard dwellWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.dwellWork = nil
+            guard self.dock == .notch, !self.ui.pillExpanded,
+                  NSMouseInRect(NSEvent.mouseLocation, self.islandHitRect, false) else { return }
+            self.setHover(true)
+        }
+        dwellWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.islandDwell, execute: work)
     }
 
     /// While the dashboard is open, checks where the pointer is: once it has left the island
@@ -416,21 +475,33 @@ final class OverlayController: NSObject {
         }
     }
 
-    /// Puts the island back around the notch: closes the card and panels hanging from it.
-    /// The talk bar is left alone (it closes itself when it's done).
+    /// Puts the island back around the notch: closes the dashboard and the side panels hanging
+    /// from it. An open card stays, as it does on an edge (it may be a question that opened by
+    /// itself), with the island kept as the bar it hangs from; so does the talk bar (it closes
+    /// itself when it's done).
     private func collapseIsland() {
         islandWatch?.invalidate()
         islandWatch = nil
         collapseWork?.cancel()
+        dwellWork?.cancel()
+        dwellWork = nil
         closeSide()
-        if ui.cardOpen { closeCard() }
         guard ui.pillExpanded, !ui.talking else { return }
         ui.pillExpanded = false
         positionPill()
     }
 
-    /// A click in another app: at the notch, everything folds back into the island.
+    /// A click in another app: at the notch, the dashboard and side panels fold back into the
+    /// island (the card stays, see collapseIsland).
     private func clickedOutside() {
+        guard dock == .notch else { return }
+        collapseIsland()
+    }
+
+    /// Before a screenshot: at the notch, the dashboard folds back into the island, so it
+    /// isn't what comes back once the shot is taken (Relay's windows are hidden for the shot
+    /// itself, see Screenshot.captureHidingRelay).
+    func prepareForScreenshot() {
         guard dock == .notch else { return }
         collapseIsland()
     }
@@ -894,37 +965,51 @@ final class HoverHostingView<Content: View>: NSHostingView<Content> {
     var onMove: (() -> Void)?
     /// Fed with the pointer's position while it's over this view (see PointerTracker).
     var tracker: PointerTracker?
+    /// Where the pointer counts as over this view, in screen coordinates; nil for all of it.
+    /// (At the notch: the island, not its bigger window.)
+    var activeArea: (() -> NSRect?)?
+    /// Whether this view reads the pointer on its own timer while it's inside. Off when its
+    /// owner already does (the notch island, on OverlayController's poll).
+    var pollsPointer = true {
+        didSet { if !pollsPointer { poll?.invalidate(); poll = nil } }
+    }
     private var area: NSTrackingArea?
     /// Mouse-moved events don't always come (a pointer that jumps, the window resizing under
     /// it), so while the pointer is inside, its position is also read on a timer.
     private var poll: Timer?
 
-    /// Reads where the pointer is now; `inside: false` clears it.
-    func refreshPointer(inside: Bool = true) {
-        guard let tracker, let window else { return }
-        guard inside else {
-            if tracker.location != nil { tracker.location = nil }
-            return
+    /// Reads where the pointer is now (nil outside `activeArea`), and publishes it if it moved.
+    func refreshPointer() {
+        guard let window else { return }
+        var location: CGPoint?
+        if activeArea?().map({ NSMouseInRect(NSEvent.mouseLocation, $0, false) }) ?? true {
+            let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            if bounds.contains(p) { location = CGPoint(x: p.x, y: isFlipped ? p.y : bounds.height - p.y) }
         }
-        let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        let point = CGPoint(x: p.x, y: isFlipped ? p.y : bounds.height - p.y)
-        let location: CGPoint? = bounds.contains(p) ? point : nil
-        if tracker.location != location { tracker.location = location }
+        setPointer(location)
+    }
+
+    private func setPointer(_ location: CGPoint?) {
+        guard let tracker, tracker.location != location else { return }
+        tracker.location = location
     }
 
     private func startPolling() {
-        guard poll == nil else { return }
-        poll = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+        guard pollsPointer, poll == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             guard let self, let window = self.window else { return }
             self.refreshPointer()
             if !NSMouseInRect(NSEvent.mouseLocation, window.frame, false) { self.stopPolling() }
         }
+        timer.tolerance = 0.005
+        RunLoop.main.add(timer, forMode: .common)
+        poll = timer
     }
 
     private func stopPolling() {
         poll?.invalidate()
         poll = nil
-        refreshPointer(inside: false)
+        setPointer(nil)
     }
 
     override func updateTrackingAreas() {

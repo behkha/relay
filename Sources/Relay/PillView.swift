@@ -188,7 +188,7 @@ struct PillView: View {
             }
             .buttonStyle(PressScale())
             .focusable(false)
-            .hoverTip(store.waitingCount > 0 ? "Inbox · \(store.waitingCount) waiting · ⌃⌥Space" : "Inbox · ⌃⌥Space")
+            .hoverTip(Self.inboxTip(waiting: store.waitingCount))
             .offset(y: gathered(.inbox))
 
             // Agents
@@ -213,7 +213,7 @@ struct PillView: View {
 
             // Talk group
             emerging(VStack(spacing: 1 * k) {
-                GroupButton(help: "Workspaces · accounts and settings", scale: k, action: onHome) {
+                GroupButton(help: "Workspaces & settings", scale: k, action: onHome) {
                     Mascot(size: 20 * k)
                 }
                 GroupButton(help: ui.listening ? "Listening · ⌥⌥ sends" : "Talk to an agent · ⌥⌥", scale: k, action: onVoice) {
@@ -262,11 +262,23 @@ struct PillView: View {
     private var agentsSummary: String {
         let waiting = sessions.filter { $0.shownStatus == .waiting || $0.shownStatus == .idle }.count
         let working = sessions.filter { $0.shownStatus == .working }.count
+        var hot: String?
+        if let (id, h) = heat.hottest, let s = store.sessions[id] { hot = "🔥 \(s.displayName) · \(h.cpuLabel)" }
+        return Self.agentsTip(hot: hot, working: working, waiting: waiting, running: sessions.count)
+    }
+
+    // The hover labels beside the buttons. The window leaves room for them (HoverTip.maxTextWidth).
+
+    static func inboxTip(waiting: Int) -> String {
+        waiting > 0 ? "Inbox · \(waiting) waiting · ⌃⌥Space" : "Inbox · ⌃⌥Space"
+    }
+
+    static func agentsTip(hot: String?, working: Int, waiting: Int, running: Int) -> String {
         var parts: [String] = []
-        if let (id, h) = heat.hottest, let s = store.sessions[id] { parts.append("🔥 \(s.displayName) · \(h.cpuLabel)") }
+        if let hot { parts.append(hot) }
         if working > 0 { parts.append("\(working) working") }
         if waiting > 0 { parts.append("\(waiting) waiting") }
-        return "Agents · " + (parts.isEmpty ? "\(sessions.count) running" : parts.joined(separator: " · "))
+        return "Agents · " + (parts.isEmpty ? "\(running) running" : parts.joined(separator: " · "))
     }
 }
 

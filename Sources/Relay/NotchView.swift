@@ -137,7 +137,9 @@ struct NotchIsland: View {
 
     private var wings: some View {
         HStack(spacing: 0) {
-            Mascot(size: min(geo.collapsedHeight - 12, 22 * s))
+            // Always on screen, so it holds still (and doesn't watch the cursor) until the island
+            // opens; it only stirs for a moment when its mood changes.
+            Mascot(size: min(geo.collapsedHeight - 12, 22 * s), followsCursor: false, lively: false)
                 .frame(width: geo.wing, height: geo.collapsedHeight)
             Spacer(minLength: 0)
             dots
@@ -150,14 +152,15 @@ struct NotchIsland: View {
         let list = Array(sessions.prefix(8))
         let perRow = list.count <= 4 ? 2 : 4
         let glyph: CGFloat = (list.count <= 4 ? 7 : 5.5) * s
+        let gap: CGFloat = (list.count <= 4 ? 3.5 : 2.5) * s   // four abreast still fits the wing
         let rows = stride(from: 0, to: list.count, by: perRow).map { Array(list[$0..<min($0 + perRow, list.count)]) }
         return Group {
             if list.isEmpty {
                 Circle().fill(Color.white.opacity(0.35)).frame(width: 4 * s, height: 4 * s)
             } else {
-                VStack(spacing: 3.5 * s) {
+                VStack(spacing: gap) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: 3.5 * s) {
+                        HStack(spacing: gap) {
                             ForEach(row) { session in
                                 StatusGlyph(status: shown(session), size: glyph, heat: heat.heat[session.id]?.level ?? .none, pop: 1.9)
                             }

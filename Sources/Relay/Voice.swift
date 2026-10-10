@@ -49,6 +49,8 @@ final class VoiceController: NSObject, ObservableObject {
     private var barSession = 0
     private var sending = false
     var anchor: () -> NSRect? = { nil }
+    /// Runs before a screenshot is taken (the overlay folds the notch island back).
+    var beforeScreenshot: () -> Void = {}
 
     var attachScreenshotByDefault: Bool {
         get { UserDefaults.standard.object(forKey: "voiceScreenshot") as? Bool ?? false }
@@ -97,10 +99,22 @@ final class VoiceController: NSObject, ObservableObject {
         if let t = target, let s = store.session(for: t) { targetLabel = s.displayName }
         else if let session, let s = store.sessions[session] { targetLabel = s.displayName }
         else { targetLabel = nil }
-        // Capture what you're looking at before the bar covers anything.
-        screenshotPath = screenshot ? Screenshot.capture() : nil
-        showBar()
-        listen()
+        screenshotPath = nil
+        guard screenshot else {
+            showBar()
+            listen()
+            return
+        }
+        // Capture what you're looking at before the bar covers anything, and without Relay's
+        // own windows (the dashboard, the card, the list: other agents' names and folders).
+        let session = barSession
+        beforeScreenshot()
+        Screenshot.captureHidingRelay { [weak self] path in
+            guard let self, session == self.barSession else { return }   // started over meanwhile
+            self.screenshotPath = path
+            self.showBar()
+            self.listen()
+        }
     }
 
     /// Starts (or restarts) dictation into the field.
@@ -601,7 +615,36 @@ extension Notification.Name {
 }
 
 enum Screenshot {
-    /// Captures the screen under the mouse to a PNG. Returns nil without Screen Recording permission.
+    /// Relay's windows faded out for a capture in flight, with the alpha each one had.
+    private static var hidden: [(window: NSWindow, alpha: CGFloat)] = []
+    private static var inFlight = 0
+
+    /// Captures the screen under the mouse with Relay's own windows out of the shot: they are
+    /// faded out, the window server is given a moment to redraw without them, and they come back
+    /// once the shot is taken. `done` gets the PNG's path (nil without Screen Recording permission).
+    static func captureHidingRelay(_ done: @escaping (String?) -> Void) {
+        guard CGPreflightScreenCaptureAccess() else { done(capture()); return }   // asks, and says so
+        if inFlight == 0 {
+            // The menu bar icon stays: it says nothing about your agents.
+            hidden = NSApp.windows
+                .filter { $0.isVisible && $0.alphaValue > 0 && !($0.className.contains("StatusBar")) }
+                .map { (window: $0, alpha: $0.alphaValue) }
+            hidden.forEach { $0.window.alphaValue = 0 }
+        }
+        inFlight += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            let path = capture()
+            inFlight -= 1
+            if inFlight == 0 {
+                hidden.forEach { $0.window.alphaValue = $0.alpha }
+                hidden = []
+            }
+            done(path)
+        }
+    }
+
+    /// Captures the screen under the mouse to a PNG, as it is. Returns nil without Screen
+    /// Recording permission.
     static func capture() -> String? {
         guard CGPreflightScreenCaptureAccess() else {
             CGRequestScreenCaptureAccess()
