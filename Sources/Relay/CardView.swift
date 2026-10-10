@@ -22,13 +22,11 @@ struct CardView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: ui.currentItem(in: store)?.id)
-        .frame(width: 360 * look.textScale, alignment: .leading)
+        .frame(width: look.panelWidth(360), alignment: .leading)
         .background(Glass(cornerRadius: 20))
         .floatingPanelShadow()
-        // Opens out of the pill: a quick grow from its right edge.
-        .scaleEffect(ui.cardOpen ? 1 : 0.92, anchor: .trailing)
-        .opacity(ui.cardOpen ? 1 : 0)
-        .animation(.spring(response: 0.34, dampingFraction: 0.8), value: ui.cardOpen)
+        // Opens out of the pill: a quick grow from its edge, or unrolling down from the notch.
+        .modifier(PanelEntrance(open: ui.cardOpen))
         .preferredColorScheme(.dark)
         .onChange(of: replyFocus) { ui.replyFocused = $0 }
         .onReceive(NotificationCenter.default.publisher(for: .relayFocusReply)) { _ in replyFocus = true }

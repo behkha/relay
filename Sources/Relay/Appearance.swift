@@ -25,6 +25,17 @@ final class Appearance: ObservableObject {
     @Published var soundName: String {
         didSet { UserDefaults.standard.set(soundName, forKey: "soundName") }
     }
+    /// Where the pill lives: the right or left edge of the screen, or around the notch.
+    @Published var dock: PillDock {
+        didSet { UserDefaults.standard.set(dock.rawValue, forKey: "pillDock") }
+    }
+    /// At the notch, the card and side panels are at least as wide as the island's button bar,
+    /// so the two read as one piece. Set by the overlay from the screen's notch.
+    @Published var notchPanelMinWidth: CGFloat = 0
+    /// Labels that say what each of the pill's buttons does, on hover.
+    @Published var showTooltips: Bool {
+        didSet { UserDefaults.standard.set(showTooltips, forKey: "showTooltips") }
+    }
 
     static let sounds = ["Tink", "Pop", "Glass", "Ping", "Purr", "Submarine", "Funk", "Bottle"]
 
@@ -34,6 +45,13 @@ final class Appearance: ObservableObject {
         pillScale = d.object(forKey: "pillScale") as? Double ?? 1
         textScale = d.object(forKey: "textScale") as? Double ?? 1
         soundName = d.string(forKey: "soundName") ?? "Tink"
+        dock = PillDock(rawValue: d.string(forKey: "pillDock") ?? "") ?? .right
+        showTooltips = d.object(forKey: "showTooltips") as? Bool ?? true
+    }
+
+    /// Width of a panel that hangs from the pill (card, agents list, settings menu).
+    func panelWidth(_ base: CGFloat) -> CGFloat {
+        dock == .notch ? max(base * textScale, notchPanelMinWidth) : base * textScale
     }
 
     /// How much darkening sits on top of the blurred glass.
@@ -49,8 +67,18 @@ final class Appearance: ObservableObject {
 struct Glass: View {
     var cornerRadius: CGFloat = 18
     @ObservedObject private var look = Appearance.shared
+    @Environment(\.hangsFromPill) private var hangsFromPill
 
     var body: some View {
+        if look.dock == .notch && hangsFromPill {
+            // Hanging from the notch island: pure black with a flat top, so the two read as one piece.
+            IslandBody(radius: cornerRadius + 4).fill(Color.black)
+        } else {
+            rounded
+        }
+    }
+
+    private var rounded: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(look.theme == .black ? Color(hex: "#090909") : Theme.card)
             .overlay(
@@ -173,17 +201,34 @@ private struct GlyphFace: View {
     }
 }
 
-/// Floating label shown to the left of a pill button while hovering it.
+/// Floating label shown beside a pill button while hovering it: toward the middle of the screen
+/// (left of the button on the right edge, right of it on the left edge, below it at the notch).
 struct HoverTip: ViewModifier {
     var text: String
     @ViewState private var hover = false
     @ObservedObject private var look = Appearance.shared
 
+    private var alignment: Alignment {
+        switch look.dock {
+        case .right: return .trailing
+        case .left: return .leading
+        case .notch: return .bottom
+        }
+    }
+
+    private var offset: CGSize {
+        switch look.dock {
+        case .right: return CGSize(width: -44 * look.pillScale, height: 0)
+        case .left: return CGSize(width: 44 * look.pillScale, height: 0)
+        case .notch: return CGSize(width: 0, height: 28)
+        }
+    }
+
     func body(content: Content) -> some View {
         content
-            .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
-            .overlay(alignment: .trailing) {
-                if hover {
+            .pointerHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
+            .overlay(alignment: alignment) {
+                if hover && look.showTooltips {
                     Text(text)
                         .font(look.font(11, .medium))
                         .foregroundStyle(.white)
@@ -191,14 +236,40 @@ struct HoverTip: ViewModifier {
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(Capsule().fill(Color.black.opacity(0.85)))
                         .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
-                        .offset(x: -44)
+                        .offset(offset)
                         .allowsHitTesting(false)
                         .transition(.opacity)
                 }
             }
+            .zIndex(hover ? 1 : 0)
     }
 }
 
 extension View {
     func hoverTip(_ text: String) -> some View { modifier(HoverTip(text: text)) }
+
+    /// A soft white halo around a pill button while the pointer is on it.
+    func hoverHalo<S: Shape>(_ shape: S) -> some View { modifier(HoverHalo(shape: shape)) }
+}
+
+/// The pill's hover state: a faint white wash over the button and a low glow around it.
+struct HoverHalo<S: Shape>: ViewModifier {
+    var shape: S
+    @ViewState private var hover = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                shape.fill(Color.white.opacity(hover ? 0.2 : 0))
+                    .blur(radius: 7)
+                    .scaleEffect(hover ? 1.18 : 0.9)
+                    .allowsHitTesting(false)
+            )
+            .overlay(
+                shape.fill(Color.white.opacity(hover ? 0.11 : 0))
+                    .overlay(shape.stroke(Color.white.opacity(hover ? 0.18 : 0), lineWidth: 0.75))
+                    .allowsHitTesting(false)
+            )
+            .pointerHover { h in withAnimation(.easeOut(duration: 0.16)) { hover = h } }
+    }
 }

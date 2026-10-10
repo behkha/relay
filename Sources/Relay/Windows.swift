@@ -22,6 +22,9 @@ final class FloatingPanel: NSPanel {
         animationBehavior = .none
         acceptsMouseMovedEvents = true   // the mascot's eyes follow the cursor over these too
     }
+
+    /// The notch island sits in the menu bar; don't let AppKit push it down below it.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 /// Owns the edge pill and the inbox card and keeps them positioned together.
@@ -45,6 +48,17 @@ final class OverlayController: NSObject {
     private let toast: FloatingPanel
     private let announcement = AnnounceModel()
     private var announceWork: DispatchWorkItem?
+    /// The island's measurements when the pill lives at the notch.
+    let notch = NotchGeometry()
+    /// The pointer over the pill's window, for hover while Relay isn't the active app.
+    private let pointer = PointerTracker()
+    private var pointerPoll: Timer?
+    private var islandWatch: Timer?
+    private var outsideTicks = 0
+    /// How long a panel takes to roll back up into the island before its window goes.
+    static let rollUp: Double = 0.3
+    private var look: Appearance { Appearance.shared }
+    private var dock: PillDock { look.dock }
 
     var onVoice: ((Bool) -> Void)?          // Bool = with screenshot
     var onVoiceReply: ((InboxItem) -> Void)?
@@ -79,21 +93,22 @@ final class OverlayController: NSObject {
             onVoice: { [weak self] in self?.onVoice?(false) },
             onScreenshotVoice: { [weak self] in self?.onVoice?(true) },
             onHome: { [weak self] in self?.closeSide(); self?.onHome?() },
-            onMore: { [weak self] in self?.toggleSide(.settings) })
-        let pillHost = HoverHostingView(rootView: pillView)
+            onMore: { [weak self] in self?.toggleSide(.settings) },
+            notch: notch)
+        let pillHost = HoverHostingView(rootView: AnyView(pillView.environment(\.pointerTracker, pointer)))
+        pillHost.tracker = pointer
         pillHost.onHover = { [weak self] inside in self?.setHover(inside) }
-        // These windows grow leftward from the screen edge; until SwiftUI redraws after a resize,
-        // keep the old frame's pixels pinned right rather than flashing them at the left.
-        pillHost.layerContentsPlacement = .right
+        // Moving onto the island inside a window still held open after it closed.
+        pillHost.onMove = { [weak self] in self?.updateIslandHitTesting() }
         pill.contentView = pillHost
 
         cardHost = SizeReportingHostingView(rootView: AnyView(
             CardView(store: store, ui: ui,
                      onClose: { [weak self] in self?.closeCard() },
                      onVoiceReply: { [weak self] item in self?.onVoiceReply?(item) })
+                .environment(\.hangsFromPill, true)
         ))
         card.contentView = cardHost
-        cardHost.layerContentsPlacement = .right
         cardHost.onFittingSizeChange = { [weak self] in self?.layoutCard() }
 
         sideHost = SizeReportingHostingView(rootView: AnyView(SidePanelRoot(
@@ -104,9 +119,9 @@ final class OverlayController: NSObject {
                 _ = self
             },
             onTalk: { [weak self] id in self?.closeSide(); self?.onTalkTo?(id) },
-            onAction: { [weak self] a in self?.settingsAction(a) })))
+            onAction: { [weak self] a in self?.settingsAction(a) })
+                .environment(\.hangsFromPill, true)))
         side.contentView = sideHost
-        sideHost.layerContentsPlacement = .right
         sideHost.onFittingSizeChange = { [weak self] in self?.layoutSide() }
         subHost = SizeReportingHostingView(rootView: AnyView(SubPanelRoot(
             store: store, ui: ui,
@@ -122,9 +137,19 @@ final class OverlayController: NSObject {
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: card, queue: .main) { [weak self] _ in
             self?.ui.cardIsKey = false
         }
+        // At the notch: where the pointer is decides whether the island takes clicks (and opens
+        // it). Polled rather than taken from mouse events: the island window ignores the mouse
+        // while the pointer is elsewhere, and a global monitor misses moves into Relay's windows.
+        pointerPoll = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            guard let self, self.dock == .notch, self.pill.isVisible else { return }
+            self.updateIslandHitTesting()
+        }
         // A click anywhere else closes the side panels.
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            DispatchQueue.main.async { self?.closeSide() }
+            DispatchQueue.main.async {
+                self?.closeSide()
+                self?.clickedOutside()
+            }
         }
 
         store.$items.combineLatest(store.$sessions, store.$workspaceFilter)
@@ -158,11 +183,65 @@ final class OverlayController: NSObject {
             if !talking && !NSMouseInRect(NSEvent.mouseLocation, self.pill.frame, false) { self.setHover(false) }
         }.store(in: &bag)
 
+        // Moving the pill to another edge or the notch: put everything away and start over there.
+        Appearance.shared.$dock.dropFirst().removeDuplicates().receive(on: RunLoop.main).sink { [weak self] _ in
+            DispatchQueue.main.async { self?.dockChanged() }
+        }.store(in: &bag)
+        // Resizing the pill (or its text) resizes its window, and moves what hangs from it.
+        Appearance.shared.$textScale.dropFirst().merge(with: Appearance.shared.$pillScale.dropFirst())
+            .receive(on: RunLoop.main).sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.updateNotch()
+                    self.positionPill()
+                    self.layoutCard()
+                    self.layoutSide()
+                }
+            }.store(in: &bag)
+
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
         installKeyMonitor()
+        applyDock()
         positionPill()
         pill.orderFrontRegardless()
+    }
+
+    private func dockChanged() {
+        closeCard()
+        closeSide()
+        hideToast()
+        ui.pillExpanded = false
+        applyDock()
+        shrinkWork?.cancel()
+        shrinkWork = nil
+        if let rect = pillRect(expanded: false) { pill.setFrame(rect, display: true) }
+        updateIslandHitTesting()
+    }
+
+    /// Window levels and resize pinning for where the pill lives.
+    private func applyDock() {
+        // These windows grow out of the pill; until SwiftUI redraws after a resize, keep the old
+        // frame's pixels pinned to that side rather than flashing them at the other.
+        let placement: NSView.LayerContentsPlacement
+        switch dock {
+        case .right: placement = .right
+        case .left: placement = .left
+        case .notch: placement = .top
+        }
+        pill.contentView?.layerContentsPlacement = placement
+        cardHost.layerContentsPlacement = placement
+        sideHost.layerContentsPlacement = placement
+        // At the notch the island sits over the panels hanging from it, hiding the seam.
+        pill.level = dock == .notch ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1) : .statusBar
+        updateNotch()
+    }
+
+    /// Takes the notch's measurements from the screen (and the pill size setting).
+    private func updateNotch() {
+        guard let screen else { return }
+        notch.update(for: screen, scale: CGFloat(look.pillScale))
+        if abs(look.notchPanelMinWidth - notch.minBarWidth) > 0.5 { look.notchPanelMinWidth = notch.minBarWidth }
     }
 
     var isPillVisible: Bool {
@@ -182,6 +261,8 @@ final class OverlayController: NSObject {
             let loc = NSEvent.mouseLocation
             if let s = NSScreen.screens.first(where: { NSMouseInRect(loc, $0.frame, false) }) { return s }
         }
+        // At the notch: the screen that has one (the built-in display), if any is connected.
+        if dock == .notch, let s = NSScreen.screens.first(where: { $0.hasNotch }) { return s }
         return NSScreen.screens.first ?? NSScreen.main
     }
 
@@ -190,11 +271,22 @@ final class OverlayController: NSObject {
         CGFloat(UserDefaults.standard.object(forKey: "pillVertical") as? Double ?? 0.5)
     }
 
-    @objc private func screensChanged() { positionPill(); layoutCard() }
+    @objc private func screensChanged() {
+        updateNotch()
+        positionPill(); layoutCard(); layoutSide()
+    }
 
     var pillFrame: NSRect { pill.frame }
 
+    /// The buttons' strip of the pill window (it's wider, for the hover labels beside them).
+    private var pillButtons: NSRect {
+        let pf = pill.frame
+        let w = 44 * look.pillScale
+        return NSRect(x: dock == .left ? pf.minX : pf.maxX - w, y: pf.minY, width: w, height: pf.height)
+    }
+
     func positionPill() {
+        if dock == .notch { positionIsland(); return }
         let open = ui.pillExpanded || ui.cardOpen || ui.talking
         guard let rect = pillRect(expanded: open) else { return }
         shrinkWork?.cancel()
@@ -215,30 +307,160 @@ final class OverlayController: NSObject {
     }
 
     private func pillRect(expanded: Bool) -> NSRect? {
+        if dock == .notch { return islandRect(expanded ? islandMode : .collapsed) }
         guard let screen else { return nil }
         let vf = screen.visibleFrame
         let full = screen.frame
-        let width = expanded ? Self.expandedWidth : Self.collapsedWidth
+        // Sized for the pill at its size setting (its views are scaled from the screen edge).
+        let scale = CGFloat(look.pillScale)
+        let width = expanded ? max(Self.expandedWidth, 46 * scale + 156) : Self.collapsedWidth * scale
         // Collapsed, the window is only as tall as its dots so it never blocks clicks it doesn't need.
         let dots = max(1, min(store.visibleSessions.count, 8))
-        let height = expanded ? Self.pillHeight : CGFloat(24 + dots * 14)
+        let height = (expanded ? Self.pillHeight : CGFloat(24 + dots * 14)) * scale
         let centerY = vf.minY + vf.height * verticalFraction
         let y = min(max(centerY - height / 2, vf.minY), vf.maxY - height)
-        return NSRect(x: full.maxX - width, y: y, width: width, height: height)
+        let x = dock == .left ? full.minX : full.maxX - width
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    // MARK: Notch island
+
+    /// Mirrors NotchIsland.mode.
+    private var islandMode: NotchIsland.Mode {
+        if ui.cardOpen || ui.panelOpen || ui.talking { return .attached }
+        return ui.pillExpanded ? .dashboard : .collapsed
+    }
+
+    /// The island itself (its black shape, flares included) in a state, in screen coordinates.
+    private func islandShape(_ mode: NotchIsland.Mode) -> NSRect? {
+        guard let screen else { return nil }
+        let size = notch.size(mode, textScale: look.textScale)
+        let width = size.width + 2 * NotchGeometry.ear
+        return NSRect(x: screen.notchMidX - width / 2, y: screen.frame.maxY - size.height, width: width, height: size.height)
+    }
+
+    /// The island's window: one fixed rectangle under the notch, big enough for the island's
+    /// largest state plus its shadow and button labels. It never resizes when the island changes
+    /// state (resizing a window under a running SwiftUI animation makes the content jump), and
+    /// it lets clicks through everywhere but the island itself (`updateIslandHitTesting`).
+    private func islandRect(_ mode: NotchIsland.Mode = .dashboard) -> NSRect? {
+        updateNotch()
+        guard let screen else { return nil }
+        let dash = notch.size(.dashboard, textScale: look.textScale)
+        let width = max(dash.width, notch.barWidth) + 2 * NotchGeometry.ear + 48
+        let height = dash.height + 44
+        return NSRect(x: screen.notchMidX - width / 2, y: screen.frame.maxY - height, width: width, height: height).integral
+    }
+
+    /// The bottom edge of the island's button bar (what panels hang from), in screen coordinates.
+    private var islandBottom: CGFloat {
+        (screen?.frame.maxY ?? pill.frame.maxY) - notch.barHeight
+    }
+
+    private func positionIsland() {
+        shrinkWork?.cancel()
+        shrinkWork = nil
+        watchIsland()
+        guard let rect = islandRect() else { return }
+        if pill.frame != rect { pill.setFrame(rect, display: true) }
+        updateIslandHitTesting()
+    }
+
+    /// The part of the island window that takes the pointer: the island in its current state
+    /// (a little more around the open dashboard, so its edge isn't a hair trigger).
+    private var islandHitRect: NSRect {
+        guard let shape = islandShape(islandMode) else { return .zero }
+        return islandMode == .dashboard ? shape.insetBy(dx: -6, dy: -8) : shape
+    }
+
+    /// Lets clicks fall through the island window except over the island, and opens the island
+    /// when the pointer reaches it. Runs on every pointer move (over the island via its view's
+    /// tracking area, elsewhere via a global monitor).
+    private func updateIslandHitTesting() {
+        guard dock == .notch else {
+            if pill.ignoresMouseEvents { pill.ignoresMouseEvents = false }
+            return
+        }
+        let inside = NSMouseInRect(NSEvent.mouseLocation, islandHitRect, false)
+        if pill.ignoresMouseEvents == inside { pill.ignoresMouseEvents = !inside }
+        (pill.contentView as? HoverHostingView<AnyView>)?.refreshPointer(inside: inside)
+        if inside && !ui.pillExpanded { setHover(true) }
+    }
+
+    /// While the dashboard is open, checks where the pointer is: once it has left the island
+    /// (not just its window, which is bigger), the island closes. Hover tracking alone misses
+    /// exits while the window is being resized under the pointer.
+    private func watchIsland() {
+        let open = dock == .notch && ui.pillExpanded && islandMode == .dashboard
+        guard open else {
+            islandWatch?.invalidate()
+            islandWatch = nil
+            return
+        }
+        guard islandWatch == nil else { return }
+        outsideTicks = 0
+        islandWatch = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            guard self.dock == .notch, self.ui.pillExpanded, self.islandMode == .dashboard,
+                  let shape = self.islandShape(.dashboard) else {
+                self.islandWatch?.invalidate()
+                self.islandWatch = nil
+                return
+            }
+            if NSMouseInRect(NSEvent.mouseLocation, shape.insetBy(dx: -8, dy: -10), false) {
+                self.outsideTicks = 0
+            } else {
+                self.outsideTicks += 1
+                if self.outsideTicks >= 3 { self.collapseIsland() }
+            }
+        }
+    }
+
+    /// Puts the island back around the notch: closes the card and panels hanging from it.
+    /// The talk bar is left alone (it closes itself when it's done).
+    private func collapseIsland() {
+        islandWatch?.invalidate()
+        islandWatch = nil
+        collapseWork?.cancel()
+        closeSide()
+        if ui.cardOpen { closeCard() }
+        guard ui.pillExpanded, !ui.talking else { return }
+        ui.pillExpanded = false
+        positionPill()
+    }
+
+    /// A click in another app: at the notch, everything folds back into the island.
+    private func clickedOutside() {
+        guard dock == .notch else { return }
+        collapseIsland()
+    }
+
+    /// The width of the panel hanging from the island; the bar matches it.
+    private func setAttachedWidth(_ width: CGFloat) {
+        guard dock == .notch, abs(notch.attachedWidth - width) > 0.5 else { return }
+        notch.attachedWidth = width
+        positionPill()
     }
 
     /// Where the talk bar sits: level with the pill's mic (or beside the card or list when one is open).
     var talkAnchor: NSRect {
         if (ui.panelOpen && side.isVisible) || (ui.cardOpen && card.isVisible) { return anchorFrame }
+        if dock == .notch {
+            // Under the island's bar.
+            guard let screen else { return anchorFrame }
+            let w = notch.barWidth
+            return NSRect(x: screen.notchMidX - w / 2, y: islandBottom - 2, width: w, height: 2)
+        }
         guard let pf = pillRect(expanded: true) else { return anchorFrame }
         // Mirrors PillView's expanded column: inbox, agents, then the talk group (workspaces, mic, camera), "…".
         let n = CGFloat(min(store.visibleSessions.count, 10))
         let agents: CGFloat = n > 0 ? n * 9 + (n - 1) * 7 + 20 + 7 : 0
         let column: CGFloat = 32 + 7 + agents + 91 + 7 + 32
         let micFromTop: CGFloat = 32 + 7 + agents + 5 + 27 + 13.5
-        let scale = Appearance.shared.pillScale
+        let scale = look.pillScale
         let micY = pf.midY + (column / 2 - micFromTop) * scale
-        return NSRect(x: pf.maxX - 44 * scale, y: micY - 1, width: 44 * scale, height: 2)
+        let x = dock == .left ? pf.minX : pf.maxX - 44 * scale
+        return NSRect(x: x, y: micY - 1, width: 44 * scale, height: 2)
     }
 
     // MARK: Announcement
@@ -252,10 +474,19 @@ final class OverlayController: NSObject {
         announceWork?.cancel()
         let pf = pill.frame
         let size = Self.toastSize
-        // Level with the pill: the capsule just above its middle, the mascot below.
-        toast.setFrame(NSRect(x: screen.frame.maxX - size.width, y: pf.midY + 33 - size.height,
-                              width: size.width, height: size.height), display: false)
-        announcement.pillWidth = ui.pillExpanded ? 46 * Appearance.shared.pillScale : 10
+        let frame: NSRect
+        switch dock {
+        case .right, .left:
+            // Level with the pill: the capsule just above its middle, the mascot below.
+            let x = dock == .left ? screen.frame.minX : screen.frame.maxX - size.width
+            frame = NSRect(x: x, y: pf.midY + 33 - size.height, width: size.width, height: size.height)
+        case .notch:
+            // Dropping out of the island.
+            frame = NSRect(x: screen.notchMidX - size.width / 2, y: islandBottom + 2 - size.height,
+                           width: size.width, height: size.height)
+        }
+        toast.setFrame(frame, display: false)
+        announcement.pillWidth = ui.pillExpanded ? 46 * look.pillScale : 10
         announcement.text = text
         announcement.phase = .hidden
         toast.order(.below, relativeTo: pill.windowNumber)   // the mascot comes out from behind the pill
@@ -283,19 +514,31 @@ final class OverlayController: NSObject {
         toast.orderOut(nil)
     }
 
+    /// Where a panel that opens out of the pill goes (the card, the agents list, the settings menu):
+    /// beside the pill's buttons on an edge, hanging from the island at the notch. `size` is the
+    /// window's, which includes the panel's shadow margin (16 around, 8 more below).
+    private func hangingFrame(size: NSSize, hangFromTop: CGFloat? = nil) -> NSRect? {
+        guard let screen else { return nil }
+        let vf = screen.visibleFrame
+        if dock == .notch {
+            let y = max(islandBottom + 16 - size.height, vf.minY + 4)
+            return NSRect(x: (screen.notchMidX - size.width / 2).rounded(), y: y, width: size.width, height: size.height)
+        }
+        let buttons = pillButtons
+        let x = dock == .left ? buttons.maxX - 12 : buttons.minX - size.width + 12
+        var y = hangFromTop.map { $0 - size.height } ?? buttons.midY - size.height / 2
+        y = min(max(y, vf.minY + 4), vf.maxY - size.height - 4)
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
     private func layoutCard() {
         guard ui.cardOpen else { return }
         cardHost.layoutSubtreeIfNeeded()
         let size = cardHost.fittingSize
-        guard let screen else { return }
-        let vf = screen.visibleFrame
-        let pillFrame = pill.frame
-        let pillLeft = pillFrame.maxX - 44 * Appearance.shared.pillScale
-        let x = pillLeft - size.width + 12
-        var y = pillFrame.midY - size.height / 2
-        y = min(max(y, vf.minY + 4), vf.maxY - size.height - 4)
-        card.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        guard let frame = hangingFrame(size: size) else { return }
+        card.setFrame(frame, display: true)
         settle(cardHost)
+        setAttachedWidth(size.width - 32)
     }
 
     private func contentChanged() {
@@ -332,6 +575,12 @@ final class OverlayController: NSObject {
     // MARK: Hover
 
     func setHover(_ inside: Bool) {
+        if inside, dock == .notch, !ui.pillExpanded {
+            // The window can be bigger than the island for a moment (while it shrinks back);
+            // only the island itself opens it.
+            guard let shape = islandShape(.collapsed),
+                  NSMouseInRect(NSEvent.mouseLocation, shape.insetBy(dx: -2, dy: -2), false) else { return }
+        }
         collapseWork?.cancel()
         if inside {
             if !ui.pillExpanded {
@@ -341,8 +590,11 @@ final class OverlayController: NSObject {
         } else {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
-                // Stay open while the mouse is over the pill or the "…" menu is up.
-                if NSMouseInRect(NSEvent.mouseLocation, self.pill.frame, false) || self.ui.panelOpen { return }
+                // Stay open while the mouse is over the pill (at the notch: the island, not its
+                // bigger window) or the "…" menu is up.
+                let over = self.dock == .notch ? (self.islandShape(self.islandMode)?.insetBy(dx: -8, dy: -10) ?? .zero)
+                                               : self.pill.frame
+                if NSMouseInRect(NSEvent.mouseLocation, over, false) || self.ui.panelOpen { return }
                 self.ui.pillExpanded = false
                 self.positionPill()
             }
@@ -362,7 +614,7 @@ final class OverlayController: NSObject {
     func openCard(focus: Bool, itemId: String? = nil) {
         guard isPillVisible else { return }
         if announcement.phase == .shown { hideToast() }
-        closeSide()
+        closeSide(forCard: true)
         ui.autoOpened = false
         // An item the filter hides (a question while showing Done): show everything so it can appear.
         if let id = itemId, store.visibleItems.contains(where: { $0.id == id }),
@@ -395,13 +647,23 @@ final class OverlayController: NSObject {
         card.makeFirstResponder(nil)
         ui.replyFocused = false
         ui.showAgentsList = false
-        card.orderOut(nil)
+        hideHanging(card) { [weak self] in self?.ui.cardOpen == false }
+        if ui.sidePanel == nil { notch.attachedWidth = 0 }
         positionPill()
         // Give focus back only if you didn't switch to something else meanwhile.
         if let prev = previousApp, prev != NSRunningApplication.current, NSApp.isActive {
             prev.activate(options: [])
         }
         previousApp = nil
+    }
+
+    /// Hides a panel that hangs from the pill. At the notch it first rolls back up into the
+    /// island (PanelEntrance), so its window goes once that has played out, if it's still closed.
+    private func hideHanging(_ window: NSWindow, ifStillClosed closed: @escaping () -> Bool) {
+        guard dock == .notch else { window.orderOut(nil); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.rollUp + 0.05) {
+            if closed() { window.orderOut(nil) }
+        }
     }
 
     /// A new question: "Agent needs you" slides out of the pill, then the card opens on it
@@ -422,21 +684,27 @@ final class OverlayController: NSObject {
         NotificationCenter.default.post(name: .relayViewSession, object: s.id)
     }
 
-    /// Where the session viewer should sit: left of the card if it's open, else left of the pill.
+    /// Where the session viewer should sit: beside the card if it's open, else beside the pill
+    /// (or the notch island).
     var anchorFrame: NSRect {
         if ui.panelOpen && side.isVisible { return side.frame.insetBy(dx: 16, dy: 16) }
         if ui.cardOpen && card.isVisible { return card.frame.insetBy(dx: 16, dy: 16) }
-        let pf = pill.frame
-        return NSRect(x: pf.maxX - 44, y: pf.minY, width: 44, height: pf.height)
+        if dock == .notch, let screen {
+            let w = notch.collapsedWidth
+            let top = screen.frame.maxY
+            return NSRect(x: screen.notchMidX - w / 2, y: top - notch.collapsedHeight, width: w, height: notch.collapsedHeight)
+        }
+        return pillButtons
     }
 
     // MARK: Side panels (agents list, settings)
 
     func toggleSide(_ panel: UIState.SidePanel) {
         if ui.sidePanel == panel { closeSide(); return }
-        closeCard()
+        // Set first, so the island stays a bar (and keeps its width) while the card goes.
         ui.subPanel = nil
         ui.sidePanel = panel
+        closeCard()
         if panel == .agents { store.refreshTitles() }
         positionPill()
         sub.orderOut(nil)
@@ -449,12 +717,14 @@ final class OverlayController: NSObject {
         }
     }
 
-    func closeSide() {
+    /// `forCard`: the card is about to open in its place, so the island keeps its bar.
+    func closeSide(forCard: Bool = false) {
         guard ui.sidePanel != nil || ui.subPanel != nil else { return }
         ui.sidePanel = nil
         ui.subPanel = nil
-        side.orderOut(nil)
+        hideHanging(side) { [weak self] in self?.ui.sidePanel == nil }
         sub.orderOut(nil)
+        if !ui.cardOpen && !forCard { notch.attachedWidth = 0 }
         positionPill()
         if !NSMouseInRect(NSEvent.mouseLocation, pill.frame, false) { setHover(false) }
     }
@@ -483,24 +753,28 @@ final class OverlayController: NSObject {
         let vf = screen.visibleFrame
         sideHost.layoutSubtreeIfNeeded()
         let size = sideHost.fittingSize
-        let pf = pill.frame
-        // The pill window is wide (for hover labels); the buttons sit at its right edge.
-        let pillLeft = pf.maxX - 44 * Appearance.shared.pillScale
-        var y: CGFloat
-        if ui.sidePanel == .settings {
-            y = pf.midY - size.height + 40   // hangs from the "…" button area
-        } else {
-            y = pf.midY - size.height / 2
-        }
-        y = min(max(y, vf.minY + 4), vf.maxY - size.height - 4)
-        side.setFrame(NSRect(x: pillLeft - size.width + 12, y: y, width: size.width, height: size.height), display: true)
+        // The settings menu hangs from the "…" button area.
+        let top: CGFloat? = ui.sidePanel == .settings ? pill.frame.midY + 40 : nil
+        guard let frame = hangingFrame(size: size, hangFromTop: top) else { return }
+        side.setFrame(frame, display: true)
         settle(sideHost)
+        setAttachedWidth(size.width - 32)
         if ui.subPanel != nil {
             subHost.layoutSubtreeIfNeeded()
             let s2 = subHost.fittingSize
-            var y2 = side.frame.maxY - s2.height
+            // Beside the menu, on the side away from the pill's edge (at the notch: to the right,
+            // a little lower, unless there's no room there).
+            var y2 = side.frame.maxY - s2.height - (dock == .notch ? 10 : 0)
             y2 = min(max(y2, vf.minY + 4), vf.maxY - s2.height - 4)
-            sub.setFrame(NSRect(x: side.frame.minX - s2.width + 24, y: y2, width: s2.width, height: s2.height), display: true)
+            var x2: CGFloat
+            switch dock {
+            case .right: x2 = side.frame.minX - s2.width + 24
+            case .left: x2 = side.frame.maxX - 24
+            case .notch:
+                x2 = side.frame.maxX - 24
+                if x2 + s2.width > vf.maxX { x2 = side.frame.minX - s2.width + 24 }
+            }
+            sub.setFrame(NSRect(x: x2, y: y2, width: s2.width, height: s2.height), display: true)
             settle(subHost)
         }
     }
@@ -617,18 +891,65 @@ final class OverlayController: NSObject {
 /// Hosting view that reports mouse enter/exit for the whole pill window.
 final class HoverHostingView<Content: View>: NSHostingView<Content> {
     var onHover: ((Bool) -> Void)?
+    var onMove: (() -> Void)?
+    /// Fed with the pointer's position while it's over this view (see PointerTracker).
+    var tracker: PointerTracker?
     private var area: NSTrackingArea?
+    /// Mouse-moved events don't always come (a pointer that jumps, the window resizing under
+    /// it), so while the pointer is inside, its position is also read on a timer.
+    private var poll: Timer?
+
+    /// Reads where the pointer is now; `inside: false` clears it.
+    func refreshPointer(inside: Bool = true) {
+        guard let tracker, let window else { return }
+        guard inside else {
+            if tracker.location != nil { tracker.location = nil }
+            return
+        }
+        let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        let point = CGPoint(x: p.x, y: isFlipped ? p.y : bounds.height - p.y)
+        let location: CGPoint? = bounds.contains(p) ? point : nil
+        if tracker.location != location { tracker.location = location }
+    }
+
+    private func startPolling() {
+        guard poll == nil else { return }
+        poll = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            guard let self, let window = self.window else { return }
+            self.refreshPointer()
+            if !NSMouseInRect(NSEvent.mouseLocation, window.frame, false) { self.stopPolling() }
+        }
+    }
+
+    private func stopPolling() {
+        poll?.invalidate()
+        poll = nil
+        refreshPointer(inside: false)
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let area { removeTrackingArea(area) }
-        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self)
         addTrackingArea(a)
         area = a
     }
 
-    override func mouseEntered(with event: NSEvent) { onHover?(true) }
-    override func mouseExited(with event: NSEvent) { onHover?(false) }
+    override func mouseEntered(with event: NSEvent) {
+        refreshPointer()
+        startPolling()
+        onHover?(true)
+    }
+    override func mouseExited(with event: NSEvent) {
+        stopPolling()
+        onHover?(false)
+    }
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        refreshPointer()
+        startPolling()
+        onMove?()
+    }
 }
 
 /// Hosting view that tells its owner when SwiftUI content wants a different size,
@@ -664,14 +985,35 @@ struct SidePanelRoot: View {
     var onTalk: (String) -> Void
     var onAction: (SettingsAction) -> Void
 
+    @ObservedObject private var look = Appearance.shared
+    /// At the notch, the panel stays on show while it rolls back up into the island.
+    @ViewState private var leaving: UIState.SidePanel?
+
+    private var panel: UIState.SidePanel? { ui.sidePanel ?? (look.dock == .notch ? leaving : nil) }
+
     var body: some View {
-        switch ui.sidePanel {
-        case .agents:
-            AgentsListView(store: store, onOpen: onOpenSession, onTalk: onTalk)
-        case .settings:
-            SettingsMenuView(store: store, ui: ui, phoneOn: phoneOn(), onAction: onAction)
-        case nil:
-            Color.clear.frame(width: 1, height: 1)
+        // Switching between the list and the menu blurs one into the other.
+        ZStack(alignment: .top) {
+            Group {
+                switch panel {
+                case .agents:
+                    AgentsListView(store: store, onOpen: onOpenSession, onTalk: onTalk)
+                case .settings:
+                    SettingsMenuView(store: store, ui: ui, phoneOn: phoneOn(), onAction: onAction)
+                case nil:
+                    Color.clear.frame(width: 1, height: 1)
+                }
+            }
+            .id(panel)
+            .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+        }
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: panel)
+        .modifier(PanelEntrance(open: ui.sidePanel != nil))
+        .onChange(of: ui.sidePanel) { new in
+            guard new == nil else { leaving = new; return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + OverlayController.rollUp) {
+                if ui.sidePanel == nil { leaving = nil }
+            }
         }
     }
 }

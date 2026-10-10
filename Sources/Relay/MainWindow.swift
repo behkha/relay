@@ -1160,6 +1160,7 @@ struct SettingsPane: View {
     @ViewState private var locale = ""
     @ViewState private var axTrusted = AXIsProcessTrusted()
     @ViewState private var vertical = UserDefaults.standard.object(forKey: "pillVertical") as? Double ?? 0.5
+    @ObservedObject private var look = Appearance.shared
 
     var body: some View {
         ScrollView {
@@ -1178,14 +1179,24 @@ struct SettingsPane: View {
                     Text("Asks Claude Haiku on that agent's own account, with no tools, for two likely follow-ups.")
                         .font(.system(size: 11)).foregroundStyle(Theme.textFaint)
                     HStack {
-                        Text("Pill position")
-                        Slider(value: $vertical, in: 0.1...0.9)
-                            .frame(width: 200)
-                            .onChange(of: vertical) {
-                                UserDefaults.standard.set($0, forKey: "pillVertical")
-                                NotificationCenter.default.post(name: .relayPillMoved, object: nil)
-                            }
-                        Text(vertical > 0.6 ? "high" : vertical < 0.4 ? "low" : "middle").foregroundStyle(Theme.textFaint)
+                        Text("Pill")
+                        PillDockPicker().frame(width: 220)
+                    }
+                    Toggle("Show what each of the pill's buttons does on hover", isOn: $look.showTooltips)
+                    if look.dock.isEdge {
+                        HStack {
+                            Text("Pill position")
+                            Slider(value: $vertical, in: 0.1...0.9)
+                                .frame(width: 200)
+                                .onChange(of: vertical) {
+                                    UserDefaults.standard.set($0, forKey: "pillVertical")
+                                    NotificationCenter.default.post(name: .relayPillMoved, object: nil)
+                                }
+                            Text(vertical > 0.6 ? "high" : vertical < 0.4 ? "low" : "middle").foregroundStyle(Theme.textFaint)
+                        }
+                    } else {
+                        Text("The pill becomes an island around the camera notch (top middle on a screen without one). Hover it to open.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.textFaint)
                     }
                     Text("Shortcut: ⌃⌥Space opens the inbox. 1–9 picks an answer, ⏎ replies, ←→ moves, esc closes.")
                         .font(.system(size: 11)).foregroundStyle(Theme.textFaint)

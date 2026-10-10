@@ -76,11 +76,12 @@ struct AgentsListView: View {
                 .frame(maxHeight: 520)
             }
         }
-        .frame(width: 318 * look.textScale)
+        .frame(width: look.panelWidth(318))
         .fixedSize(horizontal: false, vertical: true)
         .background(Glass(cornerRadius: 18))
         .floatingPanelShadow()
-        .scaleEffect(revealed ? 1 : 0.94, anchor: .trailing)
+        // At the notch the list unrolls out of the island instead (PanelEntrance), so keep its width.
+        .scaleEffect(revealed || look.dock == .notch ? 1 : 0.94, anchor: look.dock.growAnchor)
         .opacity(revealed ? 1 : 0)
         .preferredColorScheme(.dark)
         .onAppear { withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { revealed = true } }
@@ -414,7 +415,7 @@ struct SettingsMenuView: View {
             .padding(.top, 4)
         }
         .padding(8)
-        .frame(width: 272 * look.textScale)
+        .frame(width: look.panelWidth(272))
         .background(Glass(cornerRadius: 16))
         .floatingPanelShadow()
         .preferredColorScheme(.dark)
@@ -521,8 +522,21 @@ struct LookSoundView: View {
 
             section("Pill") {
                 VStack(spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "rectangle.portrait.and.arrow.right").font(look.font(10)).foregroundStyle(Theme.textDim).frame(width: 14)
+                        Text("Position").font(look.font(12)).foregroundStyle(.white).frame(width: 64, alignment: .leading)
+                        PillDockPicker().controlSize(.small)
+                    }
                     sliderRow(icon: "arrow.up.left.and.arrow.down.right", title: "Pill size", value: $look.pillScale, range: 0.8...1.3)
                     sliderRow(icon: "textformat.size", title: "Text size", value: $look.textScale, range: 0.9...1.25)
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.bubble").font(look.font(10)).foregroundStyle(Theme.textDim).frame(width: 14)
+                        Text("Tooltips on hover").font(look.font(12)).foregroundStyle(.white)
+                        Spacer()
+                        Toggle("", isOn: $look.showTooltips)
+                            .labelsHidden()
+                            .toggleStyle(.switch).controlSize(.mini)
+                    }
                 }
             }
 
