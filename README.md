@@ -55,7 +55,7 @@ It started as a re-creation of [One](https://getone.one) and then grew one featu
 
 ### The edge pill
 
-A thin black tab that flares into the right edge of the screen, one glyph per agent. Think of it as `htop` for your attention:
+A thin black tab that flares into the right edge of the screen (or the left, or [under the notch](#right-left-or-the-notch)), one glyph per agent. Think of it as `htop` for your attention:
 
 | Glyph | State |
 | --- | --- |
@@ -63,9 +63,19 @@ A thin black tab that flares into the right edge of the screen, one glyph per ag
 | Amber | Blocked on you |
 | Green | Done |
 
-A glyph pops when its agent changes state, so you see an agent finish out of the corner of your eye. Hover to expand the column of glossy black buttons: **inbox** (a dot means something is waiting), **agents**, **workspaces** (the mascot), **talk**, **talk with a screenshot**, and **settings** (`…`). While you talk the mic turns into live red level bars. Every button has a tooltip, because hidden UI without labels is a crime.
+A glyph pops when its agent changes state, so you see an agent finish out of the corner of your eye. Hover to expand the column of glossy black buttons: **inbox** (a dot means something is waiting), **agents**, **workspaces** (the mascot), **talk**, **talk with a screenshot**, and **settings** (`…`). While you talk the mic turns into live red level bars. Every button has a tooltip, because hidden UI without labels is a crime. Tooltips and hover work even while another app is in front; turn them off in **Look & sound** if you know the buttons by heart.
 
 When an agent asks something, **Agent needs you** slides out of the pill and the mascot (Relay's speech bubble with eyes) drops out from behind it, then both tuck back in as the card opens.
+
+### Right, left, or the notch
+
+**Settings → Inbox → Pill** (or **Position** in the pill's **Look & sound**) puts Relay where your eyes already are:
+
+- **Right** (default): the edge pill described above. **Pill position** slides it up or down the edge.
+- **Left**: the same pill, mirrored. The card, panels, talk bar and session viewer open toward the middle of the screen.
+- **Notch**: a black island around the camera housing, like the Dynamic Island you didn't know your Mac had. Collapsed, it shows the mascot on one side of the notch and a dot per agent on the other. Rest the pointer on it for a moment (passing over doesn't count) and it opens into a dashboard: the buttons, a bigger mascot, what your agents are doing, and a chip per agent. The card, agents list, settings and talk bar hang from the island as one black piece. Clicks beside the island go to the menu bar as usual. On a Mac without a notch the island sits at the top centre of the menu bar.
+
+Switching takes effect at once; nothing to restart.
 
 ### The inbox card
 
@@ -115,7 +125,7 @@ Answered in the terminal or the Claude app instead? The card (and the phone's co
 
 ### Settings
 
-`…` opens Accounts, which account to show, Phone, **Look & sound** (Dark or Black theme, pill size, text size, sounds), Advanced, Hide for 2 hours, and Quit.
+`…` opens Accounts, which account to show, Phone, **Look & sound** (Dark or Black theme, pill position, pill size, text size, tooltips, sounds), Advanced, Hide for 2 hours, and Quit.
 
 ## Install
 
@@ -142,7 +152,7 @@ Drop `--install` to just build into `./build/Relay.app`. `scripts/selftest.sh` r
 
 ## Quick start
 
-1. Open Relay from Applications. It lives in the menu bar and on the right edge of the screen (`LSUIElement`, so no Dock icon cluttering your life).
+1. Open Relay from Applications. It lives in the menu bar and on the right edge of the screen (`LSUIElement`, so no Dock icon cluttering your life). Prefer the left edge or the notch? See [Right, left, or the notch](#right-left-or-the-notch).
 2. The first launch opens the **Workspaces** window and connects your default Claude Code account (`~/.claude`).
 3. Start a Claude Code agent. Ask it something hard. Watch the card appear.
 
@@ -282,6 +292,8 @@ The script posts each event to Relay on `127.0.0.1` with a random token from `se
 | `SelfTest.swift` | `Relay --self-test`, run by `scripts/selftest.sh` |
 | `CardView.swift`, `PillView.swift`, `Panels.swift` | The UI you actually look at |
 | `Mascot.swift` | The mascot, "Agent needs you", and the pill's chrome, level bars and status pops |
+| `Dock.swift`, `NotchView.swift` | Where the pill docks (right, left, notch) and the notch island |
+| `Pointer.swift` | Hover and tooltips that work while another app is in front |
 | `Markdown.swift` | A Markdown renderer, because of course |
 | `Resources/relay-hook.sh` | The bridge Claude Code calls |
 | `Resources/remote.html`, `sw.js`, `manifest.webmanifest` | The phone page and its Home Screen app files |
