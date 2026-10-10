@@ -24,10 +24,26 @@ final class Appearance: ObservableObject {
     @Published var soundName: String {
         didSet { UserDefaults.standard.set(soundName, forKey: "soundName") }
     }
-    /// Where the pill lives: the right or left edge of the screen, or around the notch.
-    @Published var dock: PillDock {
-        didSet { UserDefaults.standard.set(dock.rawValue, forKey: "pillDock"); bridge() }
+    /// Where the user wants the pill: the right or left edge of the screen, or around the notch.
+    /// Picking the notch is the one-click switch of DESIGN.md 18.2: Relay takes it from whichever
+    /// nimbi app had it.
+    @Published var preferredDock: PillDock {
+        didSet {
+            UserDefaults.standard.set(preferredDock.rawValue, forKey: "pillDock")
+            if preferredDock == .notch, oldValue != .notch { notchClaim.take() }
+            resolveDock()
+        }
     }
+    /// Where the pill is: the preferred dock, except that while another nimbi app owns the notch
+    /// it waits at the right edge, and comes back the moment the notch is Relay's again.
+    @Published private(set) var dock: PillDock {
+        didSet { bridge() }
+    }
+    /// The nimbi app that has the notch while Relay wants it, if not Relay (for settings).
+    @Published private(set) var notchTakenBy: String?
+
+    private let notchClaim = SurfaceClaim(surface: .notch, bundleID: Bundle.main.bundleIdentifier ?? "com.behkha.relay")
+    private var claims: SurfaceClaim.Observation?
     /// At the notch, the card and side panels are at least as wide as the island's button bar,
     /// so the two read as one piece. Set by the overlay from the screen's notch.
     @Published var notchPanelMinWidth: CGFloat = 0
@@ -44,9 +60,36 @@ final class Appearance: ObservableObject {
         pillScale = d.object(forKey: "pillScale") as? Double ?? 1
         textScale = d.object(forKey: "textScale") as? Double ?? 1
         soundName = d.string(forKey: "soundName") ?? "Tink"
-        dock = PillDock(rawValue: d.string(forKey: "pillDock") ?? "") ?? .right
+        let preferred = PillDock(rawValue: d.string(forKey: "pillDock") ?? "") ?? .right
+        preferredDock = preferred
+        dock = preferred
         showTooltips = d.object(forKey: "showTooltips") as? Bool ?? true
+        // At launch Relay only takes a notch nobody has; one the user gave away stays given.
+        if preferred == .notch { notchClaim.claim() }
+        claims = SurfaceClaim.observe { [weak self] claim in
+            guard claim.surface == .notch else { return }
+            self?.resolveDock()
+        }
+        resolveDock()
         bridge()
+    }
+
+    /// Takes the notch back for Relay (the "Use for Relay" button).
+    func takeNotch() {
+        notchClaim.take()
+        resolveDock()
+    }
+
+    private func resolveDock() {
+        var owner = SurfaceClaim.owner(of: .notch)
+        if preferredDock == .notch, owner == nil {
+            notchClaim.claim()
+            owner = SurfaceClaim.owner(of: .notch)
+        }
+        let taken = preferredDock == .notch && owner != notchClaim.bundleID ? owner : nil
+        if taken != notchTakenBy { notchTakenBy = taken }
+        let effective: PillDock = taken == nil ? preferredDock : .right
+        if effective != dock { dock = effective }
     }
 
     /// Hands the look to NimbiKit, so its components match the rest of Relay.

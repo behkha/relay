@@ -528,6 +528,7 @@ struct LookSoundView: View {
                         Text("Position").font(look.font(12)).foregroundStyle(.white).frame(width: 64, alignment: .leading)
                         PillDockPicker().controlSize(.small)
                     }
+                    NotchOwnerNote()
                     sliderRow(icon: "arrow.up.left.and.arrow.down.right", title: "Pill size", value: $look.pillScale, range: 0.8...1.3)
                     sliderRow(icon: "textformat.size", title: "Text size", value: $look.textScale, range: 0.9...1.25)
                     HStack(spacing: 8) {

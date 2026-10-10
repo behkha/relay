@@ -18,8 +18,8 @@ final class NotchGeometry: ObservableObject {
     /// The pill size setting (0.8 … 1.3): everything but the notch itself grows with it.
     @Published var scale: CGFloat = 1
 
-    /// The concave flare where the island's top meets the bezel, on each side.
-    static let ear: CGFloat = 7
+    /// The concave flare where the island's top meets the bezel, on each side (NimbiKit's `IslandShape`).
+    static let ear: CGFloat = IslandShape.defaultEar
 
     /// Room on each side of the notch for the mascot (left) and the agents' dots (right): just
     /// enough for them, since the collapsed island sits over the menu bar and takes its clicks.
@@ -80,66 +80,46 @@ final class NotchGeometry: ObservableObject {
     }
 }
 
-extension NSScreen {
-    var hasNotch: Bool { safeAreaInsets.top > 0 }
-
-    /// The camera housing's width and height in points, or (0, menu bar height) without one.
-    var notchSize: (CGFloat, CGFloat) {
-        if hasNotch, let left = auxiliaryTopLeftArea, let right = auxiliaryTopRightArea {
-            return (max(0, frame.width - left.width - right.width), safeAreaInsets.top)
-        }
-        let menuBar = frame.maxY - visibleFrame.maxY
-        return (0, menuBar > 10 ? menuBar : 24)
-    }
-
-    /// The middle of the camera housing (the screen's middle without one).
-    var notchMidX: CGFloat {
-        if hasNotch, let left = auxiliaryTopLeftArea, let right = auxiliaryTopRightArea {
-            return frame.minX + left.width + (frame.width - left.width - right.width) / 2
-        }
-        return frame.midX
-    }
-}
-
-/// The notch island: flat along the top of the screen, flaring into the bezel at both top
-/// corners and rounded below, like the camera housing it grows out of. `rect` includes the
-/// flares (`ear` on each side).
-struct IslandShape: Shape {
-    var bottomRadius: CGFloat
-    var ear: CGFloat = NotchGeometry.ear
-
-    var animatableData: CGFloat {
-        get { bottomRadius }
-        set { bottomRadius = newValue }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        let left = rect.minX + ear, right = rect.maxX - ear
-        let e = min(ear, rect.height / 2)
-        let r = max(0, min(bottomRadius, (right - left) / 2, rect.height - e))
-        var p = Path()
-        p.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        p.addQuadCurve(to: CGPoint(x: left, y: rect.minY + e), control: CGPoint(x: left, y: rect.minY))
-        p.addLine(to: CGPoint(x: left, y: rect.maxY - r))
-        p.addQuadCurve(to: CGPoint(x: left + r, y: rect.maxY), control: CGPoint(x: left, y: rect.maxY))
-        p.addLine(to: CGPoint(x: right - r, y: rect.maxY))
-        p.addQuadCurve(to: CGPoint(x: right, y: rect.maxY - r), control: CGPoint(x: right, y: rect.maxY))
-        p.addLine(to: CGPoint(x: right, y: rect.minY + e))
-        p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY), control: CGPoint(x: right, y: rect.minY))
-        p.closeSubpath()
-        return p
-    }
-}
-
 /// Right edge, left edge or notch: where the pill lives.
 struct PillDockPicker: View {
     @ObservedObject private var look = Appearance.shared
 
     var body: some View {
-        Picker("", selection: $look.dock) {
+        Picker("", selection: $look.preferredDock) {
             ForEach(PillDock.allCases) { Text($0.title).tag($0) }
         }
         .pickerStyle(.segmented)
         .labelsHidden()
+    }
+}
+
+/// Shown under the dock picker while another nimbi app has the notch Relay wants
+/// (DESIGN.md 18.2): who has it, where the pill is meanwhile, and the switch back.
+struct NotchOwnerNote: View {
+    @ObservedObject private var look = Appearance.shared
+
+    var body: some View {
+        if let owner = look.notchTakenBy {
+            HStack(spacing: 8) {
+                Text("Notch is used by \(Self.appName(owner)). The pill waits at the right edge.")
+                    .font(look.font(11))
+                    .foregroundStyle(Theme.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button("Use for Relay") { look.takeNotch() }
+                    .buttonStyle(PillButtonStyle())
+            }
+        }
+    }
+
+    static func appName(_ bundleID: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
+           let bundle = Bundle(url: url),
+           let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String {
+            return name
+        }
+        let last = bundleID.split(separator: ".").last.map(String.init) ?? bundleID
+        return last.prefix(1).uppercased() + last.dropFirst()
     }
 }

@@ -76,6 +76,8 @@ When an agent asks something, **Agent needs you** slides out of the pill and the
 - **Left**: the same pill, mirrored. The card, panels, talk bar and session viewer open toward the middle of the screen.
 - **Notch**: a black island around the camera housing, like the Dynamic Island you didn't know your Mac had. Collapsed, it shows the mascot on one side of the notch and a dot per agent on the other. Rest the pointer on it for a moment (passing over doesn't count) and it opens into a dashboard: the buttons, a bigger mascot, what your agents are doing, and a chip per agent. The card, agents list, settings and talk bar hang from the island as one black piece. Clicks beside the island go to the menu bar as usual. On a Mac without a notch the island sits at the top centre of the menu bar.
 
+  The notch is shared by every [nimbi](https://github.com/behkha/nimbi) app, one at a time. If you give it to another one (say [Skyline](https://github.com/behkha/nimbi-skyline), from its settings), Relay's pill waits at the right edge, and settings show "Notch is used by Skyline" with a **Use for Relay** button to take it back. Either way the switch is live.
+
 Switching takes effect at once; nothing to restart.
 
 ### The inbox card

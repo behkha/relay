@@ -1183,6 +1183,7 @@ struct SettingsPane: View {
                         Text("Pill")
                         PillDockPicker().frame(width: 220)
                     }
+                    NotchOwnerNote()
                     Toggle("Show what each of the pill's buttons does on hover", isOn: $look.showTooltips)
                     if look.dock.isEdge {
                         HStack {

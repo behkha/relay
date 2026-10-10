@@ -7,7 +7,7 @@ let package = Package(
     dependencies: [
         // nimbi's shared cloud, tokens and components. To work on both at once, swap in
         // .package(path: "../nimbi-kit") with a checkout next to this repo.
-        .package(url: "https://github.com/behkha/nimbi-kit.git", from: "0.2.0")
+        .package(url: "https://github.com/behkha/nimbi-kit.git", from: "0.3.0")
     ],
     targets: [
         .executableTarget(
