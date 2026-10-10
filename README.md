@@ -1,7 +1,7 @@
 <div align="center">
 
 <!-- Re-record with scripts/record-mascot.sh idle. -->
-<img src="docs/mascot.webp" alt="Relay's mascot: a pastel cloud in a ring of liquid light, breathing, blinking and glancing around" width="160" height="160">
+<img src="docs/mascot.webp" alt="Relay's mascot: a pastel cloud in a ring of liquid light, breathing, blinking and glancing around" width="256" height="256">
 
 # Relay
 

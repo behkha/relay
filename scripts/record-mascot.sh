@@ -19,6 +19,9 @@ SIZE="${MASCOT_SIZE:-384}"
 FPS="${MASCOT_FPS:-16}"
 QUALITY="${MASCOT_QUALITY:-50}"
 ALPHA_QUALITY="${MASCOT_ALPHA_QUALITY:-80}"
+# The window leaves room for droplets and marks that idle never shows; 0.72 keeps only the
+# middle of it (the faintest glow included) so the cloud fills the picture. Use 1 for reel and busy.
+CROP="${MASCOT_CROP:-$([ "$SCENE" = idle ] && echo 0.72 || echo 1)}"
 if command -v cwebp >/dev/null && command -v webpmux >/dev/null; then FORMAT=webp; else FORMAT=apng; fi
 [ -n "$OUT" ] || OUT="docs/mascot.$([ "$FORMAT" = webp ] && echo webp || echo png)"
 case "$OUT" in *.webp) FORMAT=webp ;; *.png|*.apng) FORMAT=apng ;; esac
@@ -44,7 +47,7 @@ echo "==> Encoding ${LEN}s at ${FPS} fps, ${SIZE} px"
 # without a jump. Everything stays RGBA with straight alpha.
 mkdir -p "$TMP/out"
 ffmpeg -y -v error -framerate "$RAWFPS" -i "$TMP/raw/f%05d.png" -filter_complex "
-  [0:v]format=rgba,fps=$FPS,scale=$SIZE:$SIZE:flags=lanczos,split=3[a][b][c];
+  [0:v]format=rgba,fps=$FPS,crop=iw*$CROP:ih*$CROP,scale=$SIZE:$SIZE:flags=lanczos,split=3[a][b][c];
   [a]trim=start=0:end=$TAIL,setpts=PTS-STARTPTS[head];
   [b]trim=start=$TAIL:end=$LEN,setpts=PTS-STARTPTS[body];
   [c]trim=start=$LEN,setpts=PTS-STARTPTS[tail];
